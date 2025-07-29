@@ -4,12 +4,12 @@ import plotly.express as px
 from queryController import LLMQueries
 from modules import getAgentData,getagentLLMToolmapping,prepGraphData,process_trace_data,calcCost
 
-st.set_page_config(layout="wide", page_title="Tredence Agent Ops Analytics")
+st.set_page_config(layout="wide", page_title="TredenceAgentOpsAnalytics",page_icon="logo.png")
 st.markdown("""
 <style>
 /* General Layout */
 .block-container {
-    padding: 0.5rem 0.5rem;
+    padding: 0rem 0.5rem 0.5rem 0.5rem;
 }
 
 /* Reusable Box Style */
@@ -50,6 +50,10 @@ h6 {
     font-weight: 600;
     margin-bottom: 6px;
 }
+/* Hide Streamlit's built-in header */
+header, [data-testid="stHeader"] {
+    display: none;
+}
 </style>
 """, unsafe_allow_html=True)
 st.markdown("""
@@ -67,11 +71,6 @@ st.markdown("""
     margin-bottom: 0.3rem;
 }
 
-/* Optional: tighter padding inside columns */
-[data-testid="column"] {
-    padding-top: 0.3rem !important;
-    padding-bottom: 0.3rem !important;
-}
 </style>
 """, unsafe_allow_html=True)
 st.markdown("""
@@ -102,9 +101,20 @@ llm = LLMQueries()
 
 #st.markdown("<div class='boxed-section'><h5 style='margin: 0;'>LLM Observability Dashboard</h5></div>", unsafe_allow_html=True)
 
+# st.markdown("""
+# <div style='background-color:lightblue; padding:1px 1px; border-radius:1px; margin-bottom:1px'>
+#     <h5 style='margin:0; font-size:19px;'>Tredence Agent Ops Platform</h5>
+# </div>
+# """, unsafe_allow_html=True)
+# st.markdown("""
+#     <div style='background-color:lightblue; padding:10px; border-radius:5px; margin-bottom:10px'>
+#         <h5 style='margin:0; font-size:19px; color:black;'>Tredence Agent Ops Platform</h5>
+#     </div>
+# """, unsafe_allow_html=True)
+
 st.markdown("""
-<div style='background-color:lightblue; padding:1px 1px; border-radius:1px; margin-bottom:1px'>
-    <h5 style='margin:0; font-size:19px;'>Tredence Agent Ops Platform</h5>
+<div style='background-color:lightblue; padding:12px 16px; border-radius:0px; margin:0; position: relative; top: 0;'>
+    <h5 style='margin:0; font-size:20px; font-weight:700; color:black;'>Tredence Agent Ops Platform</h5>
 </div>
 """, unsafe_allow_html=True)
 
@@ -113,7 +123,6 @@ with st.expander("Filters",expanded=True):
     col1, col2, col3, col4 = st.columns([0.4, 0.2, 0.2, 0.2],vertical_alignment="center")
     with col1:
         selected = st.selectbox("Projects", llm.get_dropdown_options(), label_visibility="visible")
-        selected= "crewAI-trip-planner"
     with col2:
         min_date, max_date = llm.get_date_range_for_project(selected)
         start_date = st.date_input("Start Date", value=min_date, min_value=min_date, max_value=max_date, label_visibility="visible")
@@ -139,7 +148,8 @@ llm_df,tool_df=getagentLLMToolmapping(agentData)
 unique_models = sorted(llm_df['child_name'].unique())
 agentLLMdf=llm_df.loc[
             (llm_df["parent_span_kind"]=="AGENT") & (llm_df["child_span_kind"]=="LLM"),
-            ["parent_name","child_name","token","parent_id","error","token_input","token_output"]
+            ["parent_name","child_name","token","parent_id","error","token_input",
+             "token_output","status_code","status_message","timestamp"]
         ].rename(columns={
         "parent_name": "agent_name",
         "child_name": "llm_model",
@@ -147,12 +157,17 @@ agentLLMdf=llm_df.loc[
         "parent_id": "agent_span_id",
         "error": "error_count"
         })
-grouped_df = agentLLMdf.groupby(['agent_span_id', 'agent_name','llm_model'], as_index=False)[['token_count','error_count',"token_input","token_output"]].sum()
+grouped_df = agentLLMdf.groupby(['agent_span_id', 'agent_name','llm_model',"status_code","status_message","timestamp"], as_index=False)[['token_count','error_count',"token_input","token_output"]].sum()
 grouped_df= calcCost(grouped_df)
-agent_new_df=grouped_df[["agent_name","llm_model","token_count","agent_span_id","error_count","total_cost(in dollars)"]]
+agent_new_df=grouped_df.loc[grouped_df["status_code"]=="OK",
+    ["agent_name","llm_model","token_count","agent_span_id","total_cost(in dollars)","error_count","timestamp"]]
+agent_new_error_df=grouped_df.loc[
+    grouped_df["status_code"].isin(["UNSET", "ERROR"]),
+    ["agent_name","llm_model","token_count","agent_span_id","status_message","total_cost(in dollars)","timestamp"]]
 toolLLMdf=llm_df.loc[
             (llm_df["parent_span_kind"]=="TOOL") & (llm_df["child_span_kind"]=="LLM"),
-            ["parent_name","child_name","token","parent_id","error","token_input","token_output"]
+            ["parent_name","child_name","token","parent_id","error","token_input",
+            "token_output","status_code","status_message","timestamp"]
         ].rename(columns={
         "parent_name": "tool_name",
         "child_name": "llm_model",
@@ -160,9 +175,14 @@ toolLLMdf=llm_df.loc[
         "parent_id": "tool_span_id",
         "error": "error_count"
         })
-grouped_df = toolLLMdf.groupby(['tool_span_id','tool_name', 'llm_model'], as_index=False)[['token_count','error_count',"token_input","token_output"]].sum()
+grouped_df = toolLLMdf.groupby(['tool_span_id','tool_name', 'llm_model',"status_code","status_message","timestamp"], as_index=False)[['token_count','error_count',"token_input","token_output"]].sum()
 grouped_df= calcCost(grouped_df)
-tool_new_df=grouped_df[["tool_name","llm_model","token_count","tool_span_id","error_count","total_cost(in dollars)"]]       
+tool_new_df=grouped_df.loc[
+    grouped_df["status_code"]=="OK",
+    ["tool_name","llm_model","token_count","tool_span_id","error_count","total_cost(in dollars)","timestamp"]]
+tool_new_error_df=grouped_df.loc[
+    grouped_df["status_code"].isin(["UNSET", "ERROR"]),
+    ["tool_name","llm_model","token_count","tool_span_id","error_count","total_cost(in dollars)","timestamp"]]       
 total_agent_new_df=agent_new_df.groupby(['agent_name', 'llm_model'], as_index=False)[["token_count","total_cost(in dollars)"]].sum()
 total_tool_new_df=tool_new_df.groupby(['tool_name', 'llm_model'], as_index=False)[["token_count","total_cost(in dollars)"]].sum()
 col1, col2,col4 = st.columns([1.3,1.3,4.7],border=True) 
@@ -171,16 +191,16 @@ with col1:
     st.divider()
     st.metric("Avg Latency", val2)
     st.divider()
-    st.metric("Total Agent Cost (in $)",round(agent_new_df["total_cost(in dollars)"].sum(),2))
+    st.metric("Total Agent Cost (in $)",round(agent_new_df["total_cost(in dollars)"].sum(),4))
 
 with col2:
     st.metric("Prompt Tokens", val3)
     st.divider()
     st.metric("Completion \n Tokens", val4) 
     st.divider() 
-    st.metric("Total Tool cost (in $)",round(tool_new_df["total_cost(in dollars)"].sum(),2))
+    st.metric("Total Tool cost (in $)",round(tool_new_df["total_cost(in dollars)"].sum(),4))
 with col4:
-    tab1,tab2,tab3,tab4=st.tabs(["Cumulative agent token usage","Cumulative tool token usage","Agent token usage", "Tool token usage"])
+    tab1,tab2,tab3,tab4,tab5, tab6=st.tabs(["Cumulative agent token usage","Cumulative tool token usage","Agent token usage", "Tool token usage","Error analysis - agent", "Error analysis - tool"])
     with tab1:
         st.dataframe(total_agent_new_df,use_container_width=True,hide_index=True,height=270)
     with tab2:  
@@ -189,6 +209,10 @@ with col4:
          st.dataframe(agent_new_df,use_container_width=True,hide_index=True,height=270)
     with tab4:
         st.dataframe(tool_new_df,use_container_width=True,hide_index=True,height=270)
+    with tab5:
+        st.dataframe(agent_new_error_df,use_container_width=True,hide_index=True,height=270)
+    with tab6: 
+        st.dataframe(tool_new_error_df,use_container_width=True,hide_index=True,height=270)       
 
 # --- Charts ---
 chart_col1, chart_col2 = st.columns(2,border=True)
@@ -402,4 +426,13 @@ with chart_col2:
                 st.markdown("&nbsp;", unsafe_allow_html=True)  
 
 processed_df=process_trace_data(model_df) 
-st.dataframe(processed_df,use_container_width=True,hide_index=True,height=300)
+st.dataframe(processed_df,
+                 use_container_width=True,hide_index=True,height=300)
+# filter_df=processed_df[["trace_id","timestamp","latency","status_code"]]
+# filter_df["Extra"] = "View More"
+# with st.expander("View trace analysis"):
+#     st.dataframe(processed_df,
+#                  column_config={},
+#                  use_container_width=True,hide_index=True,height=300)                
+
+    
