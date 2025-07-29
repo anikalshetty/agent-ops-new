@@ -191,6 +191,11 @@ def getagentLLMToolmapping(df):
             if parent_span.get('span_kind') == 'AGENT':
                 # Extract agent name and model name from attributes
                 agent_attr = parent_span.get('attributes')
+                status_code=parent_span.get("status_code")
+                timestamp=(parent_span.get('start_time').tz_convert('Asia/Kolkata')).strftime('%Y-%m-%d %H:%M:%S')
+                status_message="-"
+                if status_code=="ERROR":
+                    status_message=parent_span.get("status_message")
                 llm_attr = row.get('attributes')
                 llm_error=row.get('cumulative_error_count')
                 # Try to parse agent name from agent attributes
@@ -209,16 +214,23 @@ def getagentLLMToolmapping(df):
                     "token_output": tokenCount_completion,
                     "token":tokenCount_prompt+tokenCount_completion,
                     "parent_id": parent_id,
-                    "error":llm_error
+                    "error":llm_error,
+                    "status_code":status_code,
+                    "status_message":status_message,
+                    "timestamp":timestamp
                 })
             # Extract LLM -> tool mappings      
             elif  parent_span.get('span_kind') == 'TOOL':
-                tool_attr = parent_span.get('attributes')  
+                tool_attr = parent_span.get('attributes') 
+                timestamp=(parent_span.get('start_time').tz_convert('Asia/Kolkata')).strftime('%Y-%m-%d %H:%M:%S') 
                 llm_attr = row.get('attributes')
                 llm_error=row.get('cumulative_error_count')
                 # Try to extract model name from LLM attributes
                 model_name,tokenCount_prompt,tokenCount_completion= getLLMModelName(llm_attr,llm_error)
-
+                status_code=parent_span.get("status_code")
+                status_message="-"
+                if status_code=="ERROR":
+                    status_message=parent_span.get("status_message")
                 # Try to extract tool name from TOOL attributes
                 tool_name=parseToolName(tool_attr)
                 llm_parent_links.append({
@@ -231,7 +243,10 @@ def getagentLLMToolmapping(df):
                     "token_output": tokenCount_completion,
                     "token":tokenCount_prompt+tokenCount_completion,
                     "parent_id": parent_id,
-                    "error":llm_error
+                    "error":llm_error,
+                    "status_code":status_code,
+                    "status_message":status_message,
+                    "timestamp":timestamp
                 })
         # Extract agent -> tool mappings        
         elif row['span_kind'] == 'TOOL':
@@ -240,6 +255,11 @@ def getagentLLMToolmapping(df):
             if parent_span.get('span_kind') == 'AGENT':
                 # Extract agent name and model name from attributes
                 agent_attr = parent_span.get('attributes')
+                status_code=parent_span.get("status_code")
+                timestamp=(parent_span.get('start_time').tz_convert('Asia/Kolkata')).strftime('%Y-%m-%d %H:%M:%S')
+                status_message="-"
+                if status_code=="ERROR":
+                    status_message=parent_span.get("status_message")
                 tool_attr = row.get('attributes')
                 tool_error= row.get('cumulative_error_count')
 
@@ -259,7 +279,10 @@ def getagentLLMToolmapping(df):
                     "token_output": 0,
                     "token":0,
                     "parent_id":parent_id,
-                    "error":tool_error
+                    "error":tool_error,
+                    "status_code":status_code,
+                    "status_message":status_message,
+                    "timestamp":timestamp
                 })        
 
     # Convert the result into a DataFrame
@@ -298,7 +321,7 @@ def getLLMModelName(llm_attr,error):
     if isinstance(llm_attr, dict):
         try:
             model_name = llm_attr["llm"]["model_name"]
-            if(error!=1):
+            if(error==0):
                 tokenCount_prompt= llm_attr["llm"]["token_count"]["prompt"]
                 tokenCount_completion= llm_attr["llm"]["token_count"]["completion"]
         except:
@@ -330,10 +353,11 @@ def process_trace_data(trace_data):
         trace_df=trace_data[trace_data["trace_rowid"]==trace_id]
         tot_token_trace_prompt=trace_df["cumulative_llm_token_count_prompt"].sum()
         tot_token_trace_completion=trace_df["cumulative_llm_token_count_completion"].sum()
+        status_code=trace_df[trace_df['span_kind']=="CHAIN"].iloc[0].get("status_code")
+        status_message=trace_df[trace_df['span_kind']=="CHAIN"].iloc[0].get("status_message")
         tot_token_trace=tot_token_trace_prompt+tot_token_trace_completion
         #Time modification from GMT to IST
         trace_time = (trace_df["timestamp"].iloc[0].tz_convert('Asia/Kolkata')).strftime('%Y-%m-%d %H:%M:%S')
-       
         trace_info = {
         "trace_id": trace_id,
         "agents": "",
@@ -351,7 +375,9 @@ def process_trace_data(trace_data):
         "total_llm_calls": 0,
         "tool_token_usage":0,
         "error_count": 0,       
-        "timestamp": trace_time
+        "timestamp": trace_time,
+        "status_code":status_code,
+        "status_message": status_message
         }
         agents=trace_df[trace_df["span_kind"]=="AGENT"]
         for _, agent in agents.iterrows(): 
@@ -369,9 +395,9 @@ def process_trace_data(trace_data):
             # get latency and append it to the row with agent name
             latency=getAgentRunTime(agent.get("start_time"),agent.get("end_time"))
             if trace_info["latency"]:
-                trace_info["latency"] += ";\n " + agent_name+" - "+str(latency)+"ms"
+                trace_info["latency"] += ";\n " + agent_name+" - "+str(latency)+"s"
             else:
-                trace_info["latency"] = agent_name+" - "+str(latency)+"ms"
+                trace_info["latency"] = agent_name+" - "+str(latency)+"s"
 
             agent_span_id=agent.get("span_id")
             agent_llm_df=trace_df[(trace_df["span_kind"]=="LLM") & (trace_df["parent_id"]==agent_span_id)]
