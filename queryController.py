@@ -204,7 +204,7 @@ class LLMQueries:
      query = """
         SELECT p.name,s.trace_rowid,s.name as span_name, s.start_time,s.end_time,s.attributes, s. span_kind, 
         s.span_id,s.parent_id,t.start_time as timestamp,
-        s.cumulative_error_count,s.cumulative_llm_token_count_prompt,s.cumulative_llm_token_count_completion
+        s.cumulative_error_count,s.cumulative_llm_token_count_prompt,s.cumulative_llm_token_count_completion,s.status_code, s.status_message
         FROM projects p
         JOIN traces t ON p.id = t.project_rowid
         JOIN spans s ON t.id = s.trace_rowid
@@ -213,3 +213,4 @@ class LLMQueries:
         """
      with get_connection() as conn:
         return pd.read_sql(query, conn, params=( selected,start_date, end_date))
+
