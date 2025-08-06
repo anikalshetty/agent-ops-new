@@ -4,29 +4,29 @@ This is a simple Streamlit application instrumented with AgentOps for observabil
 
 ## 🔧 Running Locally
 
-1. **Clone the repository**
+### 1. **Clone the repository**
 
 ```bash
 git clone https://github.com/0xSushmitha/agent-ops-new.git
 cd agent-ops-new
 ```
 
-2. **Create and activate a virtual environment**
+### 2. **Create and activate a virtual environment**
 
 ```bash
 python3 -m venv venv
 source venv/bin/activate      # On Windows use: venv\\Scripts\\activate
 ```
 
-3. **Install dependencies**
+### 3. **Install dependencies**
 
 ```bash
 pip install -r requirements.txt
 ```
 
-4. **Set DB secrets**
+### 4. **Set DB secrets**
 
-### DBController.py if local
+#### In DBController.py if local
   ```
   def get_connection():
       return psycopg2.connect(
@@ -37,7 +37,7 @@ pip install -r requirements.txt
           password=""
       )
   ```
-### streamlit cloud if hosted in cloud
+#### In streamlit cloud if hosted in cloud
   ```
   db_host=""
   db_name=""
@@ -45,7 +45,7 @@ pip install -r requirements.txt
   db_password=""
   ```
 
-5. **Run the app**
+### 5. **Run the app**
 
    ```
    streamlit run app.py
