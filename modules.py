@@ -345,109 +345,137 @@ def filterByError(filter_option,df):
     else:
         filtered_df = df.copy()
     return filtered_df    
-
 def process_trace_data(trace_data):
     result = []
-    trace_ids=trace_data["trace_rowid"].unique()
-    for trace_id in trace_ids:
-        trace_df=trace_data[trace_data["trace_rowid"]==trace_id]
-        tot_token_trace_prompt=trace_df["cumulative_llm_token_count_prompt"].sum()
-        tot_token_trace_completion=trace_df["cumulative_llm_token_count_completion"].sum()
-        status_code=trace_df[trace_df['span_kind']=="CHAIN"].iloc[0].get("status_code")
-        status_message=trace_df[trace_df['span_kind']=="CHAIN"].iloc[0].get("status_message")
-        tot_token_trace=tot_token_trace_prompt+tot_token_trace_completion
-        #Time modification from GMT to IST
-        trace_time = (trace_df["timestamp"].iloc[0].tz_convert('Asia/Kolkata')).strftime('%Y-%m-%d %H:%M:%S')
-        trace_info = {
-        "trace_id": trace_id,
-        "agents": "",
-        "No. of agent calls": 0,
-        "latency": "",
-        "LLM calls": "",
-        "LLM" : "",
-        "agent_token_usage":"",
-        "total_token_usage": tot_token_trace,
-        "tool_names": [],
-        "tool_usage_count": "",
-        "llm_models_agent": [],
-        "llm_models_tool": [],
-        "llm_calls_tool": 0,
-        "total_llm_calls": 0,
-        "tool_token_usage":0,
-        "error_count": 0,       
-        "timestamp": trace_time,
-        "status_code":status_code,
-        "status_message": status_message
-        }
-        agents=trace_df[trace_df["span_kind"]=="AGENT"]
-        for _, agent in agents.iterrows(): 
-            #Iterate each agent
-            agent_attr=agent.get("attributes")
+    trace_ids = trace_data["trace_rowid"].unique()
 
-            #Get agent name and append it to the trace row
-            agent_name=parseAgentName(agent_attr)
+    for trace_id in trace_ids:
+        trace_df = trace_data[trace_data["trace_rowid"] == trace_id]
+
+        tot_token_trace_prompt = trace_df["cumulative_llm_token_count_prompt"].sum()
+        tot_token_trace_completion = trace_df["cumulative_llm_token_count_completion"].sum()
+        tot_token_trace = tot_token_trace_prompt + tot_token_trace_completion
+
+        status_chain = trace_df[trace_df['span_kind'] == "CHAIN"].iloc[0]
+        status_code = status_chain.get("status_code")
+        status_message = status_chain.get("status_message")
+
+        # Time modification from GMT to IST
+        trace_time = (trace_df["timestamp"].iloc[0].tz_convert('Asia/Kolkata')).strftime('%Y-%m-%d %H:%M:%S')
+
+        trace_info = {
+            "trace_id": trace_id,
+            "agents": "",
+            "No. of agent calls": 0,
+            "latency": "",
+            "LLM calls": "",
+            "LLM": "",
+            "agent_token_usage": "",
+            "total_token_usage": tot_token_trace,
+            "tool_names": [],
+            "tool_usage_count": "",
+            "llm_models_agent": [],
+            "llm_models_tool": [],
+            "llm_calls_tool": 0,
+            "total_llm_calls": 0,   # will be set below
+            "tool_token_usage": 0,
+            "error_count": 0,
+            "timestamp": trace_time,
+            "status_code": status_code,
+            "status_message": status_message
+        }
+
+        # NEW: running total of LLM calls for this trace
+        total_llm_calls = 0 
+
+        agents = trace_df[trace_df["span_kind"] == "AGENT"]
+        for _, agent in agents.iterrows():
+            # Iterate each agent
+            agent_attr = agent.get("attributes")
+
+            # Get agent name and append it to the trace row
+            agent_name = parseAgentName(agent_attr)
             if trace_info["agents"]:
                 trace_info["agents"] += ";\n " + agent_name
             else:
                 trace_info["agents"] = agent_name
-            trace_info["No. of agent calls"]+=1
-            
-            # get latency and append it to the row with agent name
-            latency=getAgentRunTime(agent.get("start_time"),agent.get("end_time"))
-            if trace_info["latency"]:
-                trace_info["latency"] += ";\n " + agent_name+" - "+str(latency)+"s"
-            else:
-                trace_info["latency"] = agent_name+" - "+str(latency)+"s"
+            trace_info["No. of agent calls"] += 1
 
-            agent_span_id=agent.get("span_id")
-            agent_llm_df=trace_df[(trace_df["span_kind"]=="LLM") & (trace_df["parent_id"]==agent_span_id)]
+            # get latency and append
+            latency = getAgentRunTime(agent.get("start_time"), agent.get("end_time"))
+            if trace_info["latency"]:
+                trace_info["latency"] += ";\n " + f"{agent_name} - {latency}s"
+            else:
+                trace_info["latency"] = f"{agent_name} - {latency}s"
+
+            agent_span_id = agent.get("span_id")
+            agent_llm_df = trace_df[(trace_df["span_kind"] == "LLM") & (trace_df["parent_id"] == agent_span_id)]
             if not agent_llm_df.empty:
 
-                #Get LLm call count and append it with agent name
-                agent_llm_call_count=agent_llm_df.shape[0]
+                # Get LLM call count per agent and append
+                agent_llm_call_count = agent_llm_df.shape[0]
+                total_llm_calls += agent_llm_call_count  # NEW
+
                 if trace_info["LLM calls"]:
-                    trace_info["LLM calls"] += ";\n " + agent_name+"-"+str(agent_llm_call_count)
+                    trace_info["LLM calls"] += ";\n " + f"{agent_name}-{agent_llm_call_count}"
                 else:
-                    trace_info["LLM calls"] = agent_name+"-"+str(agent_llm_call_count)
+                    trace_info["LLM calls"] = f"{agent_name}-{agent_llm_call_count}"
 
-                #LLM Model name per agent
-                agent_llm_model_name,token_prompt,token_completion=getLLMModelName(agent_llm_df["attributes"].iloc[0],agent_llm_df["cumulative_error_count"])
+                # LLM Model name per agent
+                agent_llm_model_name, token_prompt, token_completion = getLLMModelName(
+                    agent_llm_df["attributes"].iloc[0],
+                    agent_llm_df["cumulative_error_count"]
+                )
                 if trace_info["LLM"]:
-                    trace_info["LLM"] += ";\n " + agent_name+" - "+agent_llm_model_name
+                    trace_info["LLM"] += ";\n " + f"{agent_name} - {agent_llm_model_name}"
                 else:
-                    trace_info["LLM"] = agent_name+" - "+agent_llm_model_name
+                    trace_info["LLM"] = f"{agent_name} - {agent_llm_model_name}"
 
-                agent_token_prompt=agent_llm_df["cumulative_llm_token_count_prompt"].sum()
-                agent_token_completion=agent_llm_df["cumulative_llm_token_count_completion"].sum()
-                tot_token_agent= agent_token_prompt+ agent_token_completion
+                agent_token_prompt = agent_llm_df["cumulative_llm_token_count_prompt"].sum()
+                agent_token_completion = agent_llm_df["cumulative_llm_token_count_completion"].sum()
+                tot_token_agent = agent_token_prompt + agent_token_completion
                 if trace_info["agent_token_usage"]:
-                    trace_info["agent_token_usage"] += ";\n " + agent_name+"-"+str(tot_token_agent)
+                    trace_info["agent_token_usage"] += ";\n " + f"{agent_name}-{tot_token_agent}"
                 else:
-                    trace_info["agent_token_usage"] = agent_name+"-"+str(tot_token_agent)
-                
-                agent_tool_df= trace_df[(trace_df["span_kind"]=="TOOL") & (trace_df["parent_id"]==agent_span_id)]
+                    trace_info["agent_token_usage"] = f"{agent_name}-{tot_token_agent}"
+
+                # Tools under this agent
+                agent_tool_df = trace_df[(trace_df["span_kind"] == "TOOL") & (trace_df["parent_id"] == agent_span_id)]
                 if not agent_tool_df.empty:
-                    agent_tool_call_count=agent_tool_df.shape[0]
+                    agent_tool_call_count = agent_tool_df.shape[0]
                     if trace_info["tool_usage_count"]:
-                        trace_info["tool_usage_count"] += ";\n " + agent_name+"-"+str(agent_tool_call_count)
+                        trace_info["tool_usage_count"] += ";\n " + f"{agent_name}-{agent_tool_call_count}"
                     else:
-                        trace_info["tool_usage_count"] = agent_name+"-"+str(agent_tool_call_count)           
-                    
-                    for _,tool in agent_tool_df.iterrows():
-                        tool_name=parseToolName(tool.get("attributes"))
+                        trace_info["tool_usage_count"] = f"{agent_name}-{agent_tool_call_count}"
+
+                    for _, tool in agent_tool_df.iterrows():
+                        tool_name = parseToolName(tool.get("attributes"))
                         trace_info["tool_names"].append(tool_name)
-                        tool_span_id=tool.get("span_id")
-                        tool_llm_df=trace_df[(trace_df["span_kind"]=="LLM") & (trace_df["parent_id"]==tool_span_id)]
+
+                        tool_span_id = tool.get("span_id")
+                        tool_llm_df = trace_df[(trace_df["span_kind"] == "LLM") & (trace_df["parent_id"] == tool_span_id)]
                         if not tool_llm_df.empty:
-                            tool_llm_call_count=tool_llm_df.shape[0]
+                            tool_llm_call_count = tool_llm_df.shape[0]
                             trace_info["llm_calls_tool"] += tool_llm_call_count
-                            tool_llm_model_name,token_prompt,token_completion=getLLMModelName(tool_llm_df["attributes"].iloc[0],tool_llm_df["cumulative_error_count"])
+                            #total_llm_calls += tool_llm_call_count  # NEW
+
+                            tool_llm_model_name, token_prompt, token_completion = getLLMModelName(
+                                tool_llm_df["attributes"].iloc[0],
+                                tool_llm_df["cumulative_error_count"]
+                            )
                             trace_info["llm_models_tool"].append(tool_llm_model_name)
-                            tool_token_prompt=tool_llm_df["cumulative_llm_token_count_prompt"].sum()
-                            tool_token_completion=tool_llm_df["cumulative_llm_token_count_completion"].sum()
-                            trace_info["tool_token_usage"]+=tool_token_prompt+tool_token_completion
-        result.append(trace_info)    
+
+                            tool_token_prompt = tool_llm_df["cumulative_llm_token_count_prompt"].sum()
+                            tool_token_completion = tool_llm_df["cumulative_llm_token_count_completion"].sum()
+                            trace_info["tool_token_usage"] += tool_token_prompt + tool_token_completion
+
+        # NEW: set the computed total into the row
+        trace_info["total_llm_calls"] = int(total_llm_calls)  # NEW
+
+        result.append(trace_info)
+
     return pd.DataFrame(result)
+
 
 def getAgentRunTime(start_time,end_time):
     latency = round((end_time - start_time).total_seconds(),2) # In seconds    
