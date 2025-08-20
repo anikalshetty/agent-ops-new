@@ -4,3 +4,4 @@ psycopg2-binary
 matplotlib
 plotly
 graphviz
+streamlit-plotly-events
