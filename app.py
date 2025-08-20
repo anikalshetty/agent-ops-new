@@ -3,6 +3,8 @@ import pandas as pd
 import plotly.express as px
 from queryController import LLMQueries
 from modules import getAgentData,getagentLLMToolmapping,prepGraphData,process_trace_data,calcCost
+import plotly.graph_objects as go
+from streamlit_plotly_events import plotly_events
 
 st.set_page_config(layout="wide", page_title="TredenceAgentOpsAnalytics",page_icon="logo.png")
 st.markdown("""
@@ -428,11 +430,182 @@ with chart_col2:
 processed_df=process_trace_data(model_df) 
 st.dataframe(processed_df,
                  use_container_width=True,hide_index=True,height=300)
-# filter_df=processed_df[["trace_id","timestamp","latency","status_code"]]
-# filter_df["Extra"] = "View More"
-# with st.expander("View trace analysis"):
-#     st.dataframe(processed_df,
-#                  column_config={},
-#                  use_container_width=True,hide_index=True,height=300)                
 
-    
+
+# # --- Interactive Bar Chart for LLM calls ---
+# st.markdown("LLM Calls Breakdown by Trace ID")
+
+# trace_ids = sorted(processed_df["trace_id"].unique())
+# selected_trace_id = st.selectbox("Select Trace ID", trace_ids)
+
+# row = processed_df[processed_df["trace_id"] == selected_trace_id].iloc[0]
+# llm_calls = row["LLM calls"]
+
+# models, counts = [], []
+# for part in str(llm_calls).split(";"):
+#     part = part.strip()
+#     if "-" in part:
+#         k, v = part.rsplit("-", 1)
+#         try:
+#             models.append(k.strip())
+#             counts.append(int(v))
+#         except ValueError:
+#             pass
+
+# if models:
+#     bar_df = pd.DataFrame({"Model": models, "Count": counts})
+#     bar_df["Count"] = bar_df["Count"].astype(int)
+
+#     # === BAR CHART (force go.Bar) ===
+#     fig = go.Figure()
+#     colors = px.colors.qualitative.Set2
+
+#     for i, row_bar in bar_df.iterrows():
+#         fig.add_trace(
+#             go.Bar(
+#                 x=[row_bar["Model"]],
+#                 y=[row_bar["Count"]],
+#                 name=row_bar["Model"],
+#                 marker_color=colors[i % len(colors)],
+#                 text=[row_bar["Count"]],
+#                 textposition="outside"
+#             )
+#         )
+
+#     fig.update_layout(
+#         barmode="group",
+#         transition_duration=0,
+#         xaxis_title="Model",
+#         yaxis_title="Number of Calls",
+#         yaxis=dict(autorange=True)
+#     )
+
+#     clicked = plotly_events(
+#         fig,
+#         click_event=True,
+#         hover_event=False,
+#         select_event=False,
+#         override_height=500,
+#         override_width="100%",
+#         key="bar_click"
+#     )
+
+#     if clicked:
+#         model_name = clicked[0]["x"]
+
+#         latency_map = {k.strip(): v.strip() for k,v in (p.split("-",1) for p in row["latency"].split(";"))}
+#         tokens_map = {k.strip(): v.strip() for k,v in (p.rsplit("-",1) for p in row["agent_token_usage"].split(";"))}
+
+#         st.markdown("---")
+#         st.subheader(f"Details for **{model_name}**")
+#         c1, c2 = st.columns(2)
+#         c1.metric("Latency", latency_map.get(model_name, "N/A"))
+#         c2.metric("Token Usage", tokens_map.get(model_name, "N/A"))
+
+# else:
+#     st.warning("No valid LLM calls found for this trace.")
+
+
+# ---------- Streamlit App ----------
+st.set_page_config(page_title="LLM Calls per Trace ID", layout="wide")
+st.markdown("LLM Calls per Trace ID")
+
+trace_ids = sorted(processed_df["trace_id"].unique())
+selected_trace_id = st.selectbox("Select Trace ID", trace_ids)
+
+# Pick row
+row = processed_df[processed_df["trace_id"] == selected_trace_id].iloc[0]
+llm_calls = row["LLM calls"]
+
+# Parse counts
+models, counts = [], []
+for part in str(llm_calls).split(";"):
+    part = part.strip()
+    if "-" in part:
+        k, v = part.rsplit("-", 1)
+        try:
+            models.append(k.strip())
+            counts.append(int(v))
+        except ValueError:
+            pass
+
+if models:
+    # Build lookup maps for latency/tokens from this row
+    # latency format: "Model - 1.23s"
+    latency_map = {}
+    for p in row["latency"].split(";"):
+        p = p.strip()
+        if "-" in p:
+            k, v = p.split("-", 1)
+            latency_map[k.strip()] = v.strip()  # keep "1.23s" string
+
+    # tokens format: "Model-12345"
+    tokens_map = {}
+    for p in row["agent_token_usage"].split(";"):
+        p = p.strip()
+        if "-" in p:
+            k, v = p.rsplit("-", 1)
+            try:
+                tokens_map[k.strip()] = f"{int(v):,}"  # format with commas for hover
+            except ValueError:
+                tokens_map[k.strip()] = v.strip()
+
+    # Prepare bar data (with hover customdata)
+    colors = px.colors.qualitative.Set2
+    fig = go.Figure()
+
+    for i, (m, c) in enumerate(zip(models, counts)):
+        # customdata holds [latency_str, tokens_str] for the hovertemplate
+        customdata = [[latency_map.get(m, "—"), tokens_map.get(m, "—")]]
+
+        fig.add_trace(go.Bar(
+            x=[m],
+            y=[int(c)],
+            name=m,
+            marker_color=colors[i % len(colors)],
+            text=[int(c)],
+            textposition="outside",
+            customdata=customdata,
+            hovertemplate=(
+                "<b>%{x}</b><br>" +
+                "Calls: %{y}<br>" +
+                "Latency: %{customdata[0]}<br>" +
+                "Tokens: %{customdata[1]}<extra></extra>"
+            )
+        ))
+
+    fig.update_layout(
+        title=f"LLM Calls for Trace {selected_trace_id}",
+        barmode="group",
+        transition_duration=0,
+        xaxis_title="Model",
+        yaxis_title="Number of Calls",
+        yaxis=dict(autorange=True)
+    )
+
+    # Capture clicks (chart remains a proper bar plot)
+    clicked = plotly_events(
+        fig,
+        click_event=True,
+        hover_event=False,
+        select_event=False,
+        override_height=500,
+        override_width="100%",
+        key="bar_click"
+    )
+
+    # Drilldown panel
+    if clicked:
+        model_name = clicked[0].get("x")
+        st.markdown("---")
+        st.subheader(f"Details for **{model_name}**")
+
+        lat_val = latency_map.get(model_name, "N/A")
+        tok_val = tokens_map.get(model_name, "N/A")
+
+        c1, c2 = st.columns(2)
+        c1.metric("Latency", lat_val)
+        c2.metric("Token Usage", tok_val)
+
+else:
+    st.warning("No valid LLM calls found for this trace.")
