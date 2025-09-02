@@ -1,8 +1,9 @@
+import numpy as np
 import pandas as pd
 import json
 import re
 import os
- 
+import streamlit as st
  
 # Function to extract unique model name
 def extract_unique_model_name(attribute):
@@ -150,8 +151,6 @@ def find_llms_under_agents(spans_df):
                 })
 
     return pd.DataFrame(output)
-
-
 
 def filter_by_model_regex(df):
     def match_gpt_model_string(attr):
@@ -344,7 +343,36 @@ def filterByError(filter_option,df):
         filtered_df = df[df['error'] != 0]
     else:
         filtered_df = df.copy()
-    return filtered_df    
+    return filtered_df  
+
+def format_detailed_tool_latency(tool_latencies):
+    """
+    tool_latencies: list of (tool_name, latency)
+    Returns a formatted string with mean, 90th percentile, and count per tool.
+    """
+    if not tool_latencies:
+        return ""
+
+    summary_parts = []
+    # Group latencies by tool name
+    tool_latency_dict = {}
+    for tool_name, latency in tool_latencies:
+        tool_latency_dict.setdefault(tool_name, []).append(latency)
+
+    for tool_name, lat_list in tool_latency_dict.items():
+        mean_latency = np.mean(lat_list)
+        perc_90 = np.percentile(lat_list, 90)
+        count = len(lat_list)
+
+        summary_parts.append(
+            f"{tool_name}\n"
+            f"mean: {mean_latency:.2f}s\n"
+            f"90th Percentile: {perc_90:.2f}s\n"
+            f"count: {count}"
+        )
+    return "\n\n".join(summary_parts)
+
+
 def process_trace_data(trace_data):
     result = []
     trace_ids = trace_data["trace_rowid"].unique()
@@ -352,9 +380,9 @@ def process_trace_data(trace_data):
     for trace_id in trace_ids:
         trace_df = trace_data[trace_data["trace_rowid"] == trace_id]
 
-        tot_token_trace_prompt = trace_df["cumulative_llm_token_count_prompt"].sum()
-        tot_token_trace_completion = trace_df["cumulative_llm_token_count_completion"].sum()
-        tot_token_trace = tot_token_trace_prompt + tot_token_trace_completion
+        # tot_token_trace_prompt = trace_df["cumulative_llm_token_count_prompt"].sum()
+        # tot_token_trace_completion = trace_df["cumulative_llm_token_count_completion"].sum()
+        # tot_token_trace = tot_token_trace_prompt + tot_token_trace_completion
 
         status_chain = trace_df[trace_df['span_kind'] == "CHAIN"].iloc[0]
         status_code = status_chain.get("status_code")
@@ -371,22 +399,25 @@ def process_trace_data(trace_data):
             "LLM calls": "",
             "LLM": "",
             "agent_token_usage": "",
-            "total_token_usage": tot_token_trace,
-            "tool_names": [],
+            "total_token_usage": 0,
+            "tool_names": "",
             "tool_usage_count": "",
             "llm_models_agent": [],
             "llm_models_tool": [],
             "llm_calls_tool": 0,
-            "total_llm_calls": 0,   # will be set below
+            "total_llm_calls": 0,
             "tool_token_usage": 0,
             "error_count": 0,
             "timestamp": trace_time,
             "status_code": status_code,
-            "status_message": status_message
+            "status_message": status_message,
+            # "tool_latency": "",
+            "agent_tool_latency": "",
+            "agent_data": []
         }
 
-        # NEW: running total of LLM calls for this trace
-        total_llm_calls = 0 
+        total_llm_calls = 0
+        total_token_usage_sum = 0
 
         agents = trace_df[trace_df["span_kind"] == "AGENT"]
         for _, agent in agents.iterrows():
@@ -408,10 +439,67 @@ def process_trace_data(trace_data):
             else:
                 trace_info["latency"] = f"{agent_name} - {latency}s"
 
+            # Extract agent input and output JSON strings safely
+            agent_input_str = None
+            agent_output_str = None
+
+            # Try to extract input and output JSON strings if present
+            try:
+                if isinstance(agent_attr, dict):
+                    input_field = agent_attr.get("input", {})
+                    if isinstance(input_field, dict):
+                        agent_input_str = input_field.get("value")
+                    elif isinstance(input_field, str):
+                        agent_input_str = input_field
+
+                    output_field = agent_attr.get("output", {})
+                    if isinstance(output_field, dict):
+                        agent_output_str = output_field.get("value")
+                    elif isinstance(output_field, str):
+                        agent_output_str = output_field
+            except Exception:
+                pass
+
+            # Normalize input JSON and parse agent input & output details according to known formats
+            parsed_agent_input = None
+            parsed_agent_output = None
+
+            # First format: top-level "input" key with JSON string in "value"
+            # Second format: inside that JSON string, another JSON string containing keys like "input", "messages" etc.
+
+            # Try parsing input
+            if agent_input_str:
+                try:
+                    parsed_input_outer = json.loads(agent_input_str)
+                    # If it has nested "input" key as string, try parse that too (second format)
+                    if isinstance(parsed_input_outer, dict) and "input" in parsed_input_outer:
+                        try:
+                            parsed_agent_input = json.loads(parsed_input_outer["input"])
+                        except Exception:
+                            parsed_agent_input = parsed_input_outer["input"]
+                    else:
+                        parsed_agent_input = parsed_input_outer
+                except Exception:
+                    parsed_agent_input = agent_input_str
+
+            # Try parsing output similarly
+            if agent_output_str:
+                try:
+                    parsed_agent_output = json.loads(agent_output_str)
+                except Exception:
+                    parsed_agent_output = agent_output_str
+
+            # Append parsed info for this agent to agent_data list
+            trace_info["agent_data"].append({
+                "agent_name": agent_name,
+                "input": parsed_agent_input,
+                "output": parsed_agent_output
+            })
+
             agent_span_id = agent.get("span_id")
             agent_llm_df = trace_df[(trace_df["span_kind"] == "LLM") & (trace_df["parent_id"] == agent_span_id)]
-            if not agent_llm_df.empty:
 
+            if not agent_llm_df.empty:
                 # Get LLM call count per agent and append
                 agent_llm_call_count = agent_llm_df.shape[0]
                 total_llm_calls += agent_llm_call_count  # NEW
@@ -434,12 +522,15 @@ def process_trace_data(trace_data):
                 agent_token_prompt = agent_llm_df["cumulative_llm_token_count_prompt"].sum()
                 agent_token_completion = agent_llm_df["cumulative_llm_token_count_completion"].sum()
                 tot_token_agent = agent_token_prompt + agent_token_completion
+                
+                total_token_usage_sum += tot_token_agent
+
                 if trace_info["agent_token_usage"]:
                     trace_info["agent_token_usage"] += ";\n " + f"{agent_name}-{tot_token_agent}"
                 else:
                     trace_info["agent_token_usage"] = f"{agent_name}-{tot_token_agent}"
 
-                # Tools under this agent
+                # 🛠 Tool processing UNDER agent loop
                 agent_tool_df = trace_df[(trace_df["span_kind"] == "TOOL") & (trace_df["parent_id"] == agent_span_id)]
                 if not agent_tool_df.empty:
                     agent_tool_call_count = agent_tool_df.shape[0]
@@ -448,16 +539,24 @@ def process_trace_data(trace_data):
                     else:
                         trace_info["tool_usage_count"] = f"{agent_name}-{agent_tool_call_count}"
 
+                    latency = getAgentRunTime(agent_tool_df["start_time"].min(), agent_tool_df["start_time"].max())
+                    if trace_info["latency"]:
+                        trace_info["latency"] += ";\n " + f"{agent_name} Tools - {latency}s"
+                    else:
+                        trace_info["latency"] = f"{agent_name} Tools - {latency}s"
+
+                    tool_names_list = []
+                    tool_latencies = []
+
                     for _, tool in agent_tool_df.iterrows():
                         tool_name = parseToolName(tool.get("attributes"))
-                        trace_info["tool_names"].append(tool_name)
+                        tool_names_list.append(tool_name)
 
                         tool_span_id = tool.get("span_id")
                         tool_llm_df = trace_df[(trace_df["span_kind"] == "LLM") & (trace_df["parent_id"] == tool_span_id)]
                         if not tool_llm_df.empty:
                             tool_llm_call_count = tool_llm_df.shape[0]
                             trace_info["llm_calls_tool"] += tool_llm_call_count
-                            #total_llm_calls += tool_llm_call_count  # NEW
 
                             tool_llm_model_name, token_prompt, token_completion = getLLMModelName(
                                 tool_llm_df["attributes"].iloc[0],
@@ -469,13 +568,141 @@ def process_trace_data(trace_data):
                             tool_token_completion = tool_llm_df["cumulative_llm_token_count_completion"].sum()
                             trace_info["tool_token_usage"] += tool_token_prompt + tool_token_completion
 
-        # NEW: set the computed total into the row
-        trace_info["total_llm_calls"] = int(total_llm_calls)  # NEW
+                        tool_latency = getAgentRunTime(tool.get("start_time"), tool.get("end_time"))
+                        tool_latencies.append((tool_name, tool_latency))
+
+                if trace_info["tool_names"]:
+                    trace_info["tool_names"] += ", " + ", ".join(tool_names_list)
+                else:
+                    trace_info["tool_names"] = ", ".join(tool_names_list)
+
+                agent_tool_latency_str = format_detailed_tool_latency(tool_latencies)
+                if trace_info["agent_tool_latency"]:
+                    trace_info["agent_tool_latency"] += f"\n\n{agent_name}:\n{agent_tool_latency_str}"
+                else:
+                    trace_info["agent_tool_latency"] = f"{agent_name}:\n{agent_tool_latency_str}"
+
+        # # Overall tool latency summary for all tools in the trace
+        # overall_tools = []
+        # overall_tool_latencies = []
+        # all_tool_spans = trace_df[trace_df["span_kind"] == "TOOL"]
+        # for _, tool in all_tool_spans.iterrows():
+        #     tool_name = parseToolName(tool.get("attributes"))
+        #     if tool_name:
+        #         overall_tools.append(tool_name)
+        #         tool_latency = getAgentRunTime(tool.get("start_time"), tool.get("end_time"))
+        #         overall_tool_latencies.append((tool_name, tool_latency))
+
+        # if overall_tool_latencies:
+        #     trace_info["tool_latency"] = format_latency_summary(overall_tool_latencies)
+        #     trace_info["tool_names"] = ", ".join(overall_tools)
+
+        trace_info["total_llm_calls"] = int(total_llm_calls)
+        trace_info["total_token_usage"] = int(total_token_usage_sum)
+        trace_info["agent_data"] = json.dumps(trace_info["agent_data"], indent=2)
 
         result.append(trace_info)
 
     return pd.DataFrame(result)
 
+def extract_agent_data(agent_data_raw):
+    agent_data_map = {}
+
+    if not agent_data_raw:
+        return agent_data_map
+
+    try:
+        if isinstance(agent_data_raw, str):
+            agent_list = json.loads(agent_data_raw)
+        else:
+            agent_list = agent_data_raw
+
+        for agent_obj in agent_list:
+            name = agent_obj.get("agent_name", "Unknown Agent")
+            input_raw = agent_obj.get("input", {})
+            tools_raw = input_raw.get("tools", [])
+
+            # 🛠 Extract tools
+            tools = []
+            for tool_str in tools_raw:
+                if "name='" in tool_str:
+                    try:
+                        tool_name = tool_str.split("name='")[1].split("'")[0]
+                        tools.append(tool_name)
+                    except IndexError:
+                        pass
+
+            # Extract input summary (goal)
+            input_goal = ""
+            if isinstance(input_raw, str):
+                match = re.search(r"goal='(.*?)'", input_raw)
+                if match:
+                    input_goal = match.group(1)
+            elif isinstance(input_raw, dict):
+                # Sometimes 'agent' field contains the long config string
+                agent_blob = input_raw.get("agent", "")
+                if agent_blob:
+                    match = re.search(r"goal='(.*?)'", agent_blob)
+                    if match:
+                        input_goal = match.group(1)
+                else:
+                    input_goal = input_raw.get("goal", "")
+
+            # output_summary = agent_obj.get("output", {}).get("description", "")
+            output_summary = agent_obj.get("output", {}).get("raw", "")
+
+            agent_data_map[name] = {
+                "tools": tools,
+                "input_summary": input_goal,
+                "output_summary": output_summary,
+            }
+
+    except Exception as e:
+        st.error(f" Failed to parse agent_data: {e}")
+
+    return agent_data_map
+
+def parse_agent_tool_latency(latency_str: str):
+    agents_data = {}
+
+    # Split by agent blocks (e.g., "AgentName:\n...")
+    agent_blocks = re.split(r'([A-Za-z0-9_ ]+):\n', latency_str)
+    # agent_blocks will look like: ['', 'Travel Planning Expert', 'Weather Forecast Tool\nmean: 0.27s...', 'Trip Justifier', 'Weather Forecast Tool\n...']
+
+    for i in range(1, len(agent_blocks), 2):
+        agent_name = agent_blocks[i].strip()
+        block = agent_blocks[i+1].strip()
+
+        tools = {}
+        # Split by double newlines to separate tool sections
+        tool_blocks = re.split(r'\n\s*\n', block)
+        for tb in tool_blocks:
+            lines = tb.strip().splitlines()
+            if not lines:
+                continue
+            tool_name = lines[0].strip()
+
+            # Extract metrics
+            mean_val = None
+            perc_90 = None
+            count_val = None
+            for line in lines[1:]:
+                if line.lower().startswith("mean:"):
+                    mean_val = line.split(":", 1)[1].strip()
+                elif "90th" in line:
+                    perc_90 = line.split(":", 1)[1].strip()
+                elif line.lower().startswith("count:"):
+                    count_val = line.split(":", 1)[1].strip()
+
+            tools[tool_name] = {
+                "mean": mean_val,
+                "p90": perc_90,
+                "count": count_val,
+            }
+
+        agents_data[agent_name] = tools
+
+    return agents_data
 
 def getAgentRunTime(start_time,end_time):
     latency = round((end_time - start_time).total_seconds(),2) # In seconds    
