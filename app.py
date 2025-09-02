@@ -2,9 +2,11 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 from queryController import LLMQueries
-from modules import getAgentData,getagentLLMToolmapping,prepGraphData,process_trace_data,calcCost
+from modules import getAgentData,getagentLLMToolmapping,prepGraphData,process_trace_data,calcCost,parse_agent_tool_latency,extract_agent_data
 import plotly.graph_objects as go
 from streamlit_plotly_events import plotly_events
+from collections import defaultdict
+import re
 
 st.set_page_config(layout="wide", page_title="TredenceAgentOpsAnalytics",page_icon="logo.png")
 st.markdown("""
@@ -508,104 +510,237 @@ st.dataframe(processed_df,
 
 # ---------- Streamlit App ----------
 st.set_page_config(page_title="LLM Calls per Trace ID", layout="wide")
-st.markdown("LLM Calls per Trace ID")
+# --- Layout with 2 columns ---
+col1, col2 = st.columns(2, border=True)
 
-trace_ids = sorted(processed_df["trace_id"].unique())
-selected_trace_id = st.selectbox("Select Trace ID", trace_ids)
+with col1:
+    st.markdown("## LLM Calls per Trace ID")
 
-# Pick row
-row = processed_df[processed_df["trace_id"] == selected_trace_id].iloc[0]
-llm_calls = row["LLM calls"]
+    # Assume processed_df is your DataFrame loaded outside this snippet
+    trace_ids = sorted(processed_df["trace_id"].unique())
+    selected_trace_id = st.selectbox("Select Trace ID", trace_ids)
 
-# Parse counts
-models, counts = [], []
-for part in str(llm_calls).split(";"):
-    part = part.strip()
-    if "-" in part:
-        k, v = part.rsplit("-", 1)
-        try:
-            models.append(k.strip())
-            counts.append(int(v))
-        except ValueError:
-            pass
+    row = processed_df[processed_df["trace_id"] == selected_trace_id].iloc[0]
+    llm_calls = row["LLM calls"]
 
-if models:
-    # Build lookup maps for latency/tokens from this row
-    # latency format: "Model - 1.23s"
-    latency_map = {}
-    for p in row["latency"].split(";"):
-        p = p.strip()
-        if "-" in p:
-            k, v = p.split("-", 1)
-            latency_map[k.strip()] = v.strip()  # keep "1.23s" string
-
-    # tokens format: "Model-12345"
-    tokens_map = {}
-    for p in row["agent_token_usage"].split(";"):
-        p = p.strip()
-        if "-" in p:
-            k, v = p.rsplit("-", 1)
+    # Parse calls: agent/model names and counts
+    models, counts = [], []
+    for part in str(llm_calls).split(";"):
+        part = part.strip()
+        if "-" in part:
+            k, v = part.rsplit("-", 1)
             try:
-                tokens_map[k.strip()] = f"{int(v):,}"  # format with commas for hover
+                models.append(k.strip())
+                counts.append(int(v))
             except ValueError:
-                tokens_map[k.strip()] = v.strip()
+                pass
 
-    # Prepare bar data (with hover customdata)
-    colors = px.colors.qualitative.Set2
-    fig = go.Figure()
+    if not models:
+        st.warning("No valid LLM calls found for this trace.")
+    else:
+        # Parse latency per agent/model
+        latency_map = {}
+        for p in row["latency"].split(";"):
+            p = p.strip()
+            if "-" in p:
+                k, v = p.split("-", 1)
+                latency_map[k.strip()] = v.strip()
 
-    for i, (m, c) in enumerate(zip(models, counts)):
-        # customdata holds [latency_str, tokens_str] for the hovertemplate
-        customdata = [[latency_map.get(m, "—"), tokens_map.get(m, "—")]]
+        # Parse tokens per agent/model
+        tokens_map = {}
+        for p in row["agent_token_usage"].split(";"):
+            p = p.strip()
+            if "-" in p:
+                k, v = p.rsplit("-", 1)
+                try:
+                    tokens_map[k.strip()] = f"{int(v):,}"
+                except ValueError:
+                    tokens_map[k.strip()] = v.strip()
 
-        fig.add_trace(go.Bar(
-            x=[m],
-            y=[int(c)],
-            name=m,
-            marker_color=colors[i % len(colors)],
-            text=[int(c)],
-            textposition="outside",
-            customdata=customdata,
-            hovertemplate=(
-                "<b>%{x}</b><br>" +
-                "Calls: %{y}<br>" +
-                "Latency: %{customdata[0]}<br>" +
-                "Tokens: %{customdata[1]}<extra></extra>"
-            )
-        ))
+        # # Parse tool names for entire trace (common to all agents)
+        # tool_names_map = {}
+        # tool_names_list = []
+        # if pd.notna(row.get("tool_names", None)):
+        #     tool_names_list = [t.strip() for t in str(row["tool_names"]).split(",") if t.strip()]
+        #     tool_names_str = ", ".join(tool_names_list)
+        #     tool_names_map = {m: tool_names_str for m in models}
 
-    fig.update_layout(
-        title=f"LLM Calls for Trace {selected_trace_id}",
-        barmode="group",
-        transition_duration=0,
-        xaxis_title="Model",
-        yaxis_title="Number of Calls",
-        yaxis=dict(autorange=True)
-    )
+        # # Parse tool latency for entire trace (common to all agents)
 
-    # Capture clicks (chart remains a proper bar plot)
-    clicked = plotly_events(
-        fig,
-        click_event=True,
-        hover_event=False,
-        select_event=False,
-        override_height=500,
-        override_width="100%",
-        key="bar_click"
-    )
+        # # Tool latency list
+        # tool_latency_raw = row.get("tool_latency", "")
+        # tool_latency_list = []
+        # if pd.notna(tool_latency_raw):
+        #     tool_latency_list = [t.strip() for t in tool_latency_raw.split(";") if t.strip()]
 
-    # Drilldown panel
-    if clicked:
-        model_name = clicked[0].get("x")
-        st.markdown("---")
-        st.subheader(f"Details for **{model_name}**")
+        # --- Parse Agent Tool Latency ---
+        agent_tool_latency_raw = row.get("agent_tool_latency", "")
+        agent_tool_latency_map = parse_agent_tool_latency(agent_tool_latency_raw)
+        agent_data_map = extract_agent_data(row.get("agent_data", []))
 
-        lat_val = latency_map.get(model_name, "N/A")
-        tok_val = tokens_map.get(model_name, "N/A")
+        # --- Plotly bar chart ---
+        colors = px.colors.qualitative.Plotly
+        fig = go.Figure()
 
-        c1, c2 = st.columns(2)
-        c1.metric("Latency", lat_val)
-        c2.metric("Token Usage", tok_val)
+        for i, (m, c) in enumerate(zip(models, counts)):
+            customdata = [[
+                latency_map.get(m, "—"),
+                tokens_map.get(m, "—"),
+                # tool_names_map.get(m, "—"),
+                # tool_latency_map_all.get(m, "—")
+            ]]
+            fig.add_trace(go.Bar(
+                x=[m],
+                y=[int(c)],
+                name=m,
+                marker_color=colors[i % len(colors)],
+                text=[int(c)],
+                textposition="outside",
+                customdata=customdata,
+                hovertemplate=(
+                    "<b>%{x}</b><br>" +
+                    "Calls: %{y}<br>" +
+                    "Latency: %{customdata[0]}<br>" +
+                    "Tokens: %{customdata[1]}<br>" +
+                    # "Agent Tool Latency: %{customdata[2]}<br>" +
+                    "<extra></extra>"
+                )
+            ))
 
-else:
-    st.warning("No valid LLM calls found for this trace.")
+        fig.update_layout(
+            title=f"LLM Calls for Trace {selected_trace_id}",
+            barmode="group",
+            xaxis_title="Agent/Model",
+            yaxis_title="Number of Calls"
+        )
+
+        clicked = plotly_events(
+            fig,
+            click_event=True,
+            hover_event=False,
+            select_event=False,
+            override_height=500,
+            override_width="100%",
+            key="bar_click"
+        )
+
+        if clicked:
+            selected_agent = clicked[0].get("x")
+            st.markdown("---")
+            st.subheader(f"Details for **{selected_agent}**")
+
+            # Latency and tokens per clicked agent/model
+            lat_val = latency_map.get(selected_agent, "N/A")
+            tok_val = tokens_map.get(selected_agent, "N/A")
+            # tool_val = tool_names_map.get(selected_agent, "N/A")
+
+            with st.container():
+                c1, c2, c3 = st.columns([1,1,2])
+                with c1.expander("Latency"):
+                    st.markdown(f"<div style='font-size: 20px;'>{lat_val}</div>", unsafe_allow_html=True)
+                with c2.expander("Token Usage"):
+                    st.markdown(f"<div style='font-size: 20px;'>{tok_val}</div>", unsafe_allow_html=True)
+                with c3:
+                    with st.expander("Agent Tool Latency"):
+                        agent_tools = agent_tool_latency_map.get(selected_agent)
+                        if agent_tools:
+                            for tool, metrics in agent_tools.items():
+                                st.markdown(f"**{tool}**")
+                                st.markdown(f"- Mean: {metrics['mean']}")
+                                st.markdown(f"- 90th Percentile: {metrics['p90']}")
+                                st.markdown(f"- Count: {metrics['count']}")
+                                st.markdown("---")  # separator
+                        else:
+                            st.markdown("No agent tool latency data available for this agent.")
+
+                # with c4.expander("Tool Latency"):
+                #     if tool_latency_list:
+                #         tool_lines = "\n".join([f"- {t}" for t in tool_latency_list])
+                #         st.markdown(tool_lines)
+                #     else:
+                #         st.markdown("No tool latency data available.")
+
+                # with c5.expander("Tool Names"):
+                #     if tool_val != "N/A":
+                #         tool_lines = "\n".join([f"- {t.strip()}" for t in tool_val.split(",") if t.strip()])
+                #         st.markdown(tool_lines)
+                #     else:
+                #         st.markdown("No tool names data available.")
+
+            with st.container():
+                with st.expander("Agent Data Details", expanded=False):
+                    agent_details = agent_data_map.get(selected_agent)
+                    if agent_details:
+                        st.markdown(f"### {selected_agent}")
+                        if agent_details.get("input_summary"):
+                            st.markdown(f"**Input Goal:** {agent_details['input_summary']}")
+                        if agent_details.get("output_summary"):
+                            st.markdown(f"**Output Description:** {agent_details['output_summary']}")
+                        if agent_details.get("tools"):
+                            tool_list = ", ".join(agent_details["tools"])
+                            st.markdown(f"**Tools Used:** {tool_list}")
+                        st.markdown("---")
+                    else:
+                        st.markdown("No `agent_data` available for this trace.")
+
+    # else:
+    #     st.warning("No valid LLM calls found for this trace.")
+
+
+with col2:
+    st.markdown("Error Distribution")
+
+    if {"status_code", "status_message"}.issubset(processed_df.columns):
+        error_df = processed_df.loc[processed_df["status_code"] == "ERROR", ["status_message"]].copy()
+
+        if not error_df.empty:
+            def extract_error(msg: str) -> str:
+                """Extract word after first '.' and before first ':'."""
+                if not isinstance(msg, str):
+                    return None
+                if "." in msg and ":" in msg:
+                    try:
+                        part = msg.split(".", 1)[1]   # after first '.'
+                        return part.split(":", 1)[0].strip()
+                    except Exception:
+                        return None
+                return None
+
+            # Apply transformation
+            error_df["error_message"] = error_df["status_message"].apply(extract_error)
+
+            # Drop rows where extraction failed
+            error_df = error_df.dropna(subset=["error_message"])
+
+            if not error_df.empty:
+                error_summary = (
+                    error_df.groupby("error_message")
+                            .size()
+                            .reset_index(name="count")
+                            .sort_values("count", ascending=False)
+                )
+
+                fig2 = px.bar(
+                    error_summary,
+                    x="error_message",
+                    y="count",
+                    text="count",
+                    title="Error Frequency",
+                    color="error_message",
+                    color_discrete_sequence=px.colors.qualitative.Plotly,
+                )
+                fig2.update_traces(textposition="outside", cliponaxis=False)
+                fig2.update_layout(
+                    xaxis_title="Error Type",
+                    yaxis_title="Frequency",
+                    showlegend=False,
+                    xaxis_tickangle=-30,
+                    xaxis={'categoryorder': 'total descending'}
+                )
+                st.plotly_chart(fig2, use_container_width=True)
+            else:
+                st.info("No parsable error messages found.")
+        else:
+            st.info("No errors found in this dataset.")
+    else:
+        st.info("No status_code / status_message columns found.")
