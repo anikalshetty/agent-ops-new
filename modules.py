@@ -152,6 +152,8 @@ def find_llms_under_agents(spans_df):
 
     return pd.DataFrame(output)
 
+
+
 def filter_by_model_regex(df):
     def match_gpt_model_string(attr):
         try:
@@ -233,7 +235,7 @@ def getagentLLMToolmapping(df):
                 # Try to extract tool name from TOOL attributes
                 tool_name=parseToolName(tool_attr)
                 llm_parent_links.append({
-                    'parent_name': agent_name,
+                    'parent_name': tool_name,
                     'child_name': model_name,
                     'trace_id' :trace_id,
                     "parent_span_kind" : "TOOL",
@@ -345,6 +347,45 @@ def filterByError(filter_option,df):
         filtered_df = df.copy()
     return filtered_df  
 
+def build_agent_tool_mermaid(agent_tool_mapping: str, trace_id=None):
+    """
+    Build a vertical Mermaid graph for agent → tools using the Agent Tool Mapping column.
+    If multiple agents, they will appear side by side.
+
+    agent_tool_mapping: string like "Agent1 → [ToolA, ToolB]; Agent2 → [ToolX]"
+    """
+    mermaid = ["graph TD"]
+
+    # Split into agents
+    agents = [a.strip() for a in agent_tool_mapping.split(";") if a.strip()]
+    agent_nodes = []
+
+    for idx, agent_entry in enumerate(agents, start=1):
+        if "→" not in agent_entry:
+            continue
+        agent, tools_str = agent_entry.split("→", 1)
+        agent = agent.strip()
+        tools = [t.strip() for t in tools_str.strip("[] ").split(",") if t.strip()]
+
+        agent_id = f"A{idx}"
+        agent_nodes.append(agent_id)
+
+        # Add agent node
+        mermaid.append(f'    {agent_id}["{agent}"]:::agent')
+
+        prev = agent_id
+        for tidx, tool in enumerate(tools, start=1):
+            tool_id = f"A{idx}T{tidx}"
+            mermaid.append(f'    {tool_id}["{tool}"]:::tool')
+            mermaid.append(f'    {prev} --> {tool_id}')
+            prev = tool_id
+
+    # Style definitions
+    mermaid.append("classDef agent fill:#f6f9ff,stroke:#4c78a8,stroke-width:2px;")
+    mermaid.append("classDef tool fill:#fffaf0,stroke:#e45756,stroke-width:2px;")
+
+    return "\n".join(mermaid)
+
 def format_detailed_tool_latency(tool_latencies):
     """
     tool_latencies: list of (tool_name, latency)
@@ -372,8 +413,32 @@ def format_detailed_tool_latency(tool_latencies):
         )
     return "\n\n".join(summary_parts)
 
+# def extract_agent_tool_names(latency_str: str):
+#     """
+#     Extract only agent → [tools] mapping from the agent_tool_latency string.
+#     Returns a dict {agent: [tool1, tool2, ...]}.
+#     """
+#     agent_tools = {}
+#     if not latency_str or not isinstance(latency_str, str):
+#         return agent_tools
 
-def process_trace_data(trace_data):
+#     # Split into agent sections
+#     agent_blocks = re.split(r'([A-Za-z0-9_ ]+):\n', latency_str)
+#     for i in range(1, len(agent_blocks), 2):
+#         agent_name = agent_blocks[i].strip()
+#         block = agent_blocks[i+1].strip()
+
+#         tools = []
+#         for line in block.splitlines():
+#             if line.strip() and not line.lower().startswith(("mean", "90th", "count")):
+#                 tools.append(line.strip())
+
+#         if tools:
+#             agent_tools[agent_name] = tools
+
+#     return agent_tools
+
+def process_trace_data(trace_data, agent_tool_df):
     result = []
     trace_ids = trace_data["trace_rowid"].unique()
 
@@ -423,7 +488,8 @@ def process_trace_data(trace_data):
         for _, agent in agents.iterrows():
             # Iterate each agent
             agent_attr = agent.get("attributes")
-
+            if not isinstance(agent_attr, dict):
+                agent_attr = {}
             # Get agent name and append it to the trace row
             agent_name = parseAgentName(agent_attr)
             if trace_info["agents"]:
@@ -491,9 +557,9 @@ def process_trace_data(trace_data):
 
             # Append parsed info for this agent to agent_data list
             trace_info["agent_data"].append({
-                "agent_name": agent_name,
-                "input": parsed_agent_input,
-                "output": parsed_agent_output
+                "agent_name": agent_name or "",
+                "input": parsed_agent_input if parsed_agent_input is not None else {},
+                "output": parsed_agent_output if parsed_agent_output is not None else {}
             })
 
             agent_span_id = agent.get("span_id")
@@ -502,7 +568,7 @@ def process_trace_data(trace_data):
             if not agent_llm_df.empty:
                 # Get LLM call count per agent and append
                 agent_llm_call_count = agent_llm_df.shape[0]
-                total_llm_calls += agent_llm_call_count  # NEW
+                total_llm_calls += agent_llm_call_count  
 
                 if trace_info["LLM calls"]:
                     trace_info["LLM calls"] += ";\n " + f"{agent_name}-{agent_llm_call_count}"
@@ -530,27 +596,33 @@ def process_trace_data(trace_data):
                 else:
                     trace_info["agent_token_usage"] = f"{agent_name}-{tot_token_agent}"
 
-                # 🛠 Tool processing UNDER agent loop
-                agent_tool_df = trace_df[(trace_df["span_kind"] == "TOOL") & (trace_df["parent_id"] == agent_span_id)]
-                if not agent_tool_df.empty:
-                    agent_tool_call_count = agent_tool_df.shape[0]
+                # Tool processing UNDER agent loop
+                agent_tools_for_agent = trace_df[(trace_df["span_kind"] == "TOOL") & (trace_df["parent_id"] == agent_span_id)]
+                if not agent_tools_for_agent.empty:
+                    agent_tool_call_count = agent_tools_for_agent.shape[0]
                     if trace_info["tool_usage_count"]:
                         trace_info["tool_usage_count"] += ";\n " + f"{agent_name}-{agent_tool_call_count}"
                     else:
                         trace_info["tool_usage_count"] = f"{agent_name}-{agent_tool_call_count}"
 
-                    latency = getAgentRunTime(agent_tool_df["start_time"].min(), agent_tool_df["start_time"].max())
+                    latency = getAgentRunTime(agent_tools_for_agent["start_time"].min(), agent_tools_for_agent["start_time"].max())
                     if trace_info["latency"]:
-                        trace_info["latency"] += ";\n " + f"{agent_name} Tools - {latency}s"
+                        trace_info["latency"] += ";\n " + f"{agent_name} - {latency}s"
                     else:
-                        trace_info["latency"] = f"{agent_name} Tools - {latency}s"
+                        trace_info["latency"] = f"{agent_name} - {latency}s"
 
-                    tool_names_list = []
+                    # tool_names_list = []
                     tool_latencies = []
-
-                    for _, tool in agent_tool_df.iterrows():
+                    # print(agent_tools_for_agent)
+                    # for _, tool in agent_tools_for_agent.iterrows():
+                    #     tool_name = parseToolName(tool.get("attributes"))
+                    #     tool_names_list.append(tool_name)
+                    for _, tool in agent_tools_for_agent.iterrows():
                         tool_name = parseToolName(tool.get("attributes"))
-                        tool_names_list.append(tool_name)
+                        if trace_info["tool_names"]:
+                            trace_info["tool_names"] += ", " + tool_name
+                        else:
+                            trace_info["tool_names"] = tool_name
 
                         tool_span_id = tool.get("span_id")
                         tool_llm_df = trace_df[(trace_df["span_kind"] == "LLM") & (trace_df["parent_id"] == tool_span_id)]
@@ -570,17 +642,17 @@ def process_trace_data(trace_data):
 
                         tool_latency = getAgentRunTime(tool.get("start_time"), tool.get("end_time"))
                         tool_latencies.append((tool_name, tool_latency))
+                        
+                        # if trace_info["tool_names"]:
+                        #     trace_info["tool_names"] += ", " + ", ".join(tool_names_list)
+                        # else:
+                        #     trace_info["tool_names"] = ", ".join(tool_names_list)
 
-                if trace_info["tool_names"]:
-                    trace_info["tool_names"] += ", " + ", ".join(tool_names_list)
-                else:
-                    trace_info["tool_names"] = ", ".join(tool_names_list)
-
-                agent_tool_latency_str = format_detailed_tool_latency(tool_latencies)
-                if trace_info["agent_tool_latency"]:
-                    trace_info["agent_tool_latency"] += f"\n\n{agent_name}:\n{agent_tool_latency_str}"
-                else:
-                    trace_info["agent_tool_latency"] = f"{agent_name}:\n{agent_tool_latency_str}"
+                        agent_tool_latency_str = format_detailed_tool_latency(tool_latencies)
+                        if trace_info["agent_tool_latency"]:
+                            trace_info["agent_tool_latency"] += f"\n\n{agent_name}:\n{agent_tool_latency_str}"
+                        else:
+                            trace_info["agent_tool_latency"] = f"{agent_name}:\n{agent_tool_latency_str}"
 
         # # Overall tool latency summary for all tools in the trace
         # overall_tools = []
@@ -601,6 +673,17 @@ def process_trace_data(trace_data):
         trace_info["total_token_usage"] = int(total_token_usage_sum)
         trace_info["agent_data"] = json.dumps(trace_info["agent_data"], indent=2)
 
+        trace_tools = agent_tool_df[agent_tool_df["trace_id"] == trace_id]
+        tool_mapping = {}
+
+        if not trace_tools.empty:
+            for agent, group in trace_tools.groupby("parent_name"):
+                tool_mapping[agent] = group["child_name"].tolist()
+
+        trace_info["agent_tool_mapping"] = "; ".join(
+            [f"{agent} → [{', '.join(tools)}]" for agent, tools in tool_mapping.items()]
+        )
+
         result.append(trace_info)
 
     return pd.DataFrame(result)
@@ -611,54 +694,77 @@ def extract_agent_data(agent_data_raw):
     if not agent_data_raw:
         return agent_data_map
 
+    # Parse agent list safely
     try:
-        if isinstance(agent_data_raw, str):
-            agent_list = json.loads(agent_data_raw)
+        agent_list = json.loads(agent_data_raw) if isinstance(agent_data_raw, str) else agent_data_raw
+        if not isinstance(agent_list, list):
+            return agent_data_map
+    except Exception:
+        return agent_data_map
+
+    for agent_obj in agent_list:
+        if not isinstance(agent_obj, dict):
+            continue
+
+        name = agent_obj.get("agent_name") or "Unknown Agent"
+
+        # -------- INPUT --------
+        input_raw = agent_obj.get("input", {})
+        if isinstance(input_raw, dict):
+            input_norm = input_raw
+        elif isinstance(input_raw, str):
+            try:
+                parsed = json.loads(input_raw)
+                input_norm = parsed if isinstance(parsed, dict) else {"_raw": input_raw}
+            except Exception:
+                input_norm = {"_raw": input_raw}
         else:
-            agent_list = agent_data_raw
+            input_norm = {}
 
-        for agent_obj in agent_list:
-            name = agent_obj.get("agent_name", "Unknown Agent")
-            input_raw = agent_obj.get("input", {})
-            tools_raw = input_raw.get("tools", [])
+        tools_raw = (input_norm.get("tools") if isinstance(input_norm, dict) else None) \
+                    or agent_obj.get("tools") \
+                    or []
+        tools = []
+        if isinstance(tools_raw, list):
+            for t in tools_raw:
+                if isinstance(t, str):
+                    m = re.search(r"name='(.*?)'", t)
+                    tools.append(m.group(1) if m else t)
+                elif isinstance(t, dict):
+                    nm = t.get("name") or t.get("tool_name") or t.get("id")
+                    if nm:
+                        tools.append(nm)
 
-            # 🛠 Extract tools
-            tools = []
-            for tool_str in tools_raw:
-                if "name='" in tool_str:
-                    try:
-                        tool_name = tool_str.split("name='")[1].split("'")[0]
-                        tools.append(tool_name)
-                    except IndexError:
-                        pass
+        input_goal = ""
+        if isinstance(input_norm, dict):
+            if isinstance(input_norm.get("goal"), str):
+                input_goal = input_norm["goal"]
+            else:
+                agent_blob = input_norm.get("agent", "")
+                if isinstance(agent_blob, str):
+                    m = re.search(r"goal='(.*?)'", agent_blob, re.DOTALL)
+                    if m:
+                        input_goal = m.group(1).strip()
+        elif isinstance(input_raw, str):
+            m = re.search(r"goal='(.*?)'", input_raw, re.DOTALL)
+            if m:
+                input_goal = m.group(1).strip()
 
-            # Extract input summary (goal)
-            input_goal = ""
-            if isinstance(input_raw, str):
-                match = re.search(r"goal='(.*?)'", input_raw)
-                if match:
-                    input_goal = match.group(1)
-            elif isinstance(input_raw, dict):
-                # Sometimes 'agent' field contains the long config string
-                agent_blob = input_raw.get("agent", "")
-                if agent_blob:
-                    match = re.search(r"goal='(.*?)'", agent_blob)
-                    if match:
-                        input_goal = match.group(1)
-                else:
-                    input_goal = input_raw.get("goal", "")
+        # -------- OUTPUT --------
+        output_raw = agent_obj.get("output", None)
+        # print("****************************************************")
+        # print(output_raw)
+        if isinstance(output_raw, dict):
+            output_summary = output_raw.get("raw", {}) 
+        else:
+            # if it's None, str, or something else → treat as {}
+            output_raw
 
-            # output_summary = agent_obj.get("output", {}).get("description", "")
-            output_summary = agent_obj.get("output", {}).get("raw", "")
-
-            agent_data_map[name] = {
-                "tools": tools,
-                "input_summary": input_goal,
-                "output_summary": output_summary,
-            }
-
-    except Exception as e:
-        st.error(f" Failed to parse agent_data: {e}")
+        agent_data_map[name] = {
+            "tools": tools,
+            "input_summary": input_goal,
+            "output_summary": output_summary,
+        }
 
     return agent_data_map
 
@@ -703,6 +809,33 @@ def parse_agent_tool_latency(latency_str: str):
         agents_data[agent_name] = tools
 
     return agents_data
+
+def get_agent_tool_sequences(agent_tool_df):
+    """
+    Build ordered sequences of tools called by each agent per trace_id.
+    Keeps duplicates, preserves call order based on timestamp.
+    Returns:
+    dict like:
+    {
+        trace_id1: {
+            "Agent A": ["Tool1", "Tool2", "Tool1"],
+            "Agent B": ["ToolX"]
+        },
+        trace_id2: {...}
+    }
+    """
+    result = {}
+
+    for trace_id, trace_group in agent_tool_df.groupby("trace_id"):
+        trace_result = {}
+        # Ensure chronological order
+        trace_group = trace_group.sort_values("timestamp")
+        for agent, agent_group in trace_group.groupby("parent_name"):
+            tools = agent_group.sort_values("timestamp")["child_name"].tolist()
+            trace_result[agent] = tools
+        result[trace_id] = trace_result
+
+    return result
 
 def getAgentRunTime(start_time,end_time):
     latency = round((end_time - start_time).total_seconds(),2) # In seconds    
