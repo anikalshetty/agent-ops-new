@@ -2,11 +2,12 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 from queryController import LLMQueries
-from modules import getAgentData,getagentLLMToolmapping,prepGraphData,process_trace_data,calcCost,parse_agent_tool_latency,extract_agent_data
+from modules import build_agent_tool_mermaid,getAgentData,getagentLLMToolmapping,prepGraphData,process_trace_data,calcCost,parse_agent_tool_latency,extract_agent_data
 import plotly.graph_objects as go
 from streamlit_plotly_events import plotly_events
 from collections import defaultdict
 import re
+import json 
 
 st.set_page_config(layout="wide", page_title="TredenceAgentOpsAnalytics",page_icon="logo.png")
 st.markdown("""
@@ -148,7 +149,7 @@ val4 = llm.get_tile4_value(selected, start_date, end_date)
 # metric_cols[3].metric("Completion Tokens", val4)
 model_df= llm.getAttributes(selected,start_date, end_date)
 agentData= getAgentData(model_df)
-llm_df,tool_df=getagentLLMToolmapping(agentData)
+llm_df,agent_tool_df=getagentLLMToolmapping(agentData)
 unique_models = sorted(llm_df['child_name'].unique())
 agentLLMdf=llm_df.loc[
             (llm_df["parent_span_kind"]=="AGENT") & (llm_df["child_span_kind"]=="LLM"),
@@ -332,7 +333,7 @@ with chart_col2:
             else:
                 st.markdown("&nbsp;", unsafe_allow_html=True)                                                   
     with tab3:
-        tool_grouped=prepGraphData(tool_df)
+        tool_grouped=prepGraphData(agent_tool_df)
         tab31,tab32,tab33=st.tabs(['All','Error','No Error'])
         with tab31:
             tool_grouped_all=tool_grouped.groupby(['parent_name', 'child_name'], as_index=False)['count'].sum()
@@ -429,10 +430,12 @@ with chart_col2:
             else:
                 st.markdown("&nbsp;", unsafe_allow_html=True)  
 
-processed_df=process_trace_data(model_df) 
+processed_df=process_trace_data(model_df, agent_tool_df)
+# exclude_cols = ["agent_data", "agent_tool_latency", "agent_tool_mapping"]
+# st.dataframe(processed_df.drop(columns=exclude_cols, errors="ignore"),
+#                  use_container_width=True,hide_index=True,height=300)
 st.dataframe(processed_df,
                  use_container_width=True,hide_index=True,height=300)
-
 
 # # --- Interactive Bar Chart for LLM calls ---
 # st.markdown("LLM Calls Breakdown by Trace ID")
@@ -514,9 +517,8 @@ st.set_page_config(page_title="LLM Calls per Trace ID", layout="wide")
 col1, col2 = st.columns(2, border=True)
 
 with col1:
-    st.markdown("## LLM Calls per Trace ID")
+    st.markdown("LLM Calls per Trace ID")
 
-    # Assume processed_df is your DataFrame loaded outside this snippet
     trace_ids = sorted(processed_df["trace_id"].unique())
     selected_trace_id = st.selectbox("Select Trace ID", trace_ids)
 
@@ -636,12 +638,12 @@ with col1:
 
             with st.container():
                 c1, c2, c3 = st.columns([1,1,2])
-                with c1.expander("Latency"):
+                with c1.expander("Agent Latency"):
                     st.markdown(f"<div style='font-size: 20px;'>{lat_val}</div>", unsafe_allow_html=True)
                 with c2.expander("Token Usage"):
                     st.markdown(f"<div style='font-size: 20px;'>{tok_val}</div>", unsafe_allow_html=True)
                 with c3:
-                    with st.expander("Agent Tool Latency"):
+                    with st.expander("Tool Latency"):
                         agent_tools = agent_tool_latency_map.get(selected_agent)
                         if agent_tools:
                             for tool, metrics in agent_tools.items():
@@ -651,7 +653,7 @@ with col1:
                                 st.markdown(f"- Count: {metrics['count']}")
                                 st.markdown("---")  # separator
                         else:
-                            st.markdown("No agent tool latency data available for this agent.")
+                            st.markdown("No tool latency data available for this agent.")
 
                 # with c4.expander("Tool Latency"):
                 #     if tool_latency_list:
@@ -672,13 +674,21 @@ with col1:
                     agent_details = agent_data_map.get(selected_agent)
                     if agent_details:
                         st.markdown(f"### {selected_agent}")
+
                         if agent_details.get("input_summary"):
                             st.markdown(f"**Input Goal:** {agent_details['input_summary']}")
-                        if agent_details.get("output_summary"):
-                            st.markdown(f"**Output Description:** {agent_details['output_summary']}")
+                        output_summary = agent_details.get("output_summary")
+                        if output_summary is not None: 
+                            st.markdown("**Output:**")
+                            st.write(output_summary)
+                            # if isinstance(output_summary, (dict, list)):
+                            #     st.json(output_summary)
+                            # else:
+                            #     st.code(str(output_summary))
                         if agent_details.get("tools"):
                             tool_list = ", ".join(agent_details["tools"])
                             st.markdown(f"**Tools Used:** {tool_list}")
+
                         st.markdown("---")
                     else:
                         st.markdown("No `agent_data` available for this trace.")
@@ -744,3 +754,32 @@ with col2:
             st.info("No errors found in this dataset.")
     else:
         st.info("No status_code / status_message columns found.")
+
+
+# === Mermaid Graph Section ===
+st.markdown("Agent Tool Flow")
+
+# Select trace_id filter
+trace_ids = sorted(processed_df["trace_id"].unique())  
+selected_trace = st.selectbox("Select Trace", trace_ids)
+
+row = processed_df[processed_df["trace_id"] == selected_trace].iloc[0]
+agent_tool_mapping = row.get("agent_tool_mapping", "")
+
+if agent_tool_mapping:
+    mermaid_code = build_agent_tool_mermaid(agent_tool_mapping, trace_id=selected_trace)
+    st.components.v1.html(
+        f"""
+        <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+        <div class="mermaid">
+        {mermaid_code}
+        </div>
+        <script>
+        mermaid.initialize({{ startOnLoad: true }});
+        </script>
+        """,
+        height=600,
+        scrolling=True,
+    )
+else:
+    st.info("No Agent Tool Mapping available for this selection.")
