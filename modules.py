@@ -1,10 +1,12 @@
 import numpy as np
 import pandas as pd
-import json
+import io, json
 import re
 import os
 import streamlit as st
- 
+from typing import List, Optional
+
+
 # Function to extract unique model name
 def extract_unique_model_name(attribute):
     # If attribute is a string, we need to load it as a dictionary
@@ -174,7 +176,7 @@ def filter_by_model_regex(df):
 
 def getAgentData(df):
     # Filter only rows with span_kind in ['AGENT', 'LLM', 'TOOL']
-    filtered_df = df[df['span_kind'].isin(['AGENT', 'LLM', 'TOOL'])].copy()
+    filtered_df = df[df['span_kind'].isin(['AGENT', 'LLM', 'TOOL', 'UNKNOWN'])].copy()
     return filtered_df
 
 def getagentLLMToolmapping(df):
@@ -183,6 +185,7 @@ def getagentLLMToolmapping(df):
     
     llm_parent_links = []
     agent_tool_links=[]
+    country_links = []
     for _, row in df.iterrows():
         trace_id=row['trace_rowid']
         # Extract agent -> LLM mappings
@@ -284,12 +287,37 @@ def getagentLLMToolmapping(df):
                     "status_code":status_code,
                     "status_message":status_message,
                     "timestamp":timestamp
-                })        
+                })  
 
+        # Extract country, region (state), city, latitude and longitude from UNKNOWN attributes
+        elif row['span_kind'] == 'UNKNOWN':
+            attrs = row.get("attributes")
+            if isinstance(attrs, dict):
+                country_name = attrs.get("country_name")
+                region = attrs.get("region")
+                city = attrs.get("city")
+                latitude = attrs.get("latitude")
+                longitude = attrs.get("longitude")
+
+                if country_name:
+                    timestamp = (
+                        row.get('start_time').tz_convert('Asia/Kolkata')
+                    ).strftime('%Y-%m-%d %H:%M:%S')
+                    country_links.append({
+                        "trace_id": trace_id,
+                        "country_name": country_name,
+                        "region": region or "",
+                        "city": city or "",
+                        "latitude": latitude,
+                        "longitude": longitude,
+                        "timestamp": timestamp
+                    })
     # Convert the result into a DataFrame
     llm_parent_links_df = pd.DataFrame(llm_parent_links)
     agent_tool_df= pd.DataFrame(agent_tool_links)
-    return llm_parent_links_df,agent_tool_df
+    country_df = pd.DataFrame(country_links)   
+
+    return llm_parent_links_df,agent_tool_df,country_df
 
 def parseAgentName(agent_attr):
     agent_name = None
@@ -478,7 +506,7 @@ def process_trace_data(trace_data, agent_tool_df):
             "status_message": status_message,
             # "tool_latency": "",
             "agent_tool_latency": "",
-            "agent_data": []
+            "agent_data": [],
         }
 
         total_llm_calls = 0
@@ -642,7 +670,7 @@ def process_trace_data(trace_data, agent_tool_df):
 
                         tool_latency = getAgentRunTime(tool.get("start_time"), tool.get("end_time"))
                         tool_latencies.append((tool_name, tool_latency))
-                        
+
                         # if trace_info["tool_names"]:
                         #     trace_info["tool_names"] += ", " + ", ".join(tool_names_list)
                         # else:
@@ -683,6 +711,14 @@ def process_trace_data(trace_data, agent_tool_df):
         trace_info["agent_tool_mapping"] = "; ".join(
             [f"{agent} → [{', '.join(tools)}]" for agent, tools in tool_mapping.items()]
         )
+        # #create country distribution 
+        # country_counts = country_distribution(trace_df)
+        # # print(country_counts)
+        # if not country_counts.empty:
+        #     # trace_info["country"] = country_counts.iloc[0]["country_name"]
+        #     trace_info["country_distribution"] = json.dumps(
+        #         country_counts.to_dict(orient="records"), indent=2
+        #     )
 
         result.append(trace_info)
 
@@ -864,3 +900,29 @@ def calcCost(df):
     df['total_cost(in dollars)'] = df.apply(calculate_row_cost, axis=1)
     
     return df
+
+def find_col(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
+    for c in candidates:
+        if c in df.columns:
+            return c
+    return None
+
+def agg_counts(df: pd.DataFrame, group_col: str) -> pd.DataFrame:
+    agg = (
+        df.groupby(group_col)
+          .size()
+          .reset_index(name="count")
+          .sort_values("count", ascending=False)
+    )
+    return agg
+
+def safe_unique_sorted(series) -> List[str]:
+    try:
+        vals = series.dropna().astype(str).unique().tolist()
+        vals.sort()
+        return vals
+    except Exception:
+        return []
+
+def df_to_csv_bytes(df: pd.DataFrame) -> bytes:
+    return df.to_csv(index=False).encode("utf-8")
