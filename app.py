@@ -2,7 +2,8 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 from queryController import LLMQueries
-from modules import build_agent_tool_mermaid,getAgentData,getagentLLMToolmapping,prepGraphData,process_trace_data,calcCost,parse_agent_tool_latency,extract_agent_data
+from modules import *
+# from modules import build_agent_tool_mermaid,getAgentData,getagentLLMToolmapping,prepGraphData,process_trace_data,calcCost,parse_agent_tool_latency,extract_agent_data
 import plotly.graph_objects as go
 from streamlit_plotly_events import plotly_events
 from collections import defaultdict
@@ -147,11 +148,11 @@ val4 = llm.get_tile4_value(selected, start_date, end_date)
 # metric_cols[1].metric("Avg Latency", val2)
 # metric_cols[2].metric("Prompt Tokens", val3)
 # metric_cols[3].metric("Completion Tokens", val4)
-model_df= llm.getAttributes(selected,start_date, end_date)
-agentData= getAgentData(model_df)
-llm_df,agent_tool_df=getagentLLMToolmapping(agentData)
+model_df = llm.getAttributes(selected,start_date, end_date)
+agentData = getAgentData(model_df)
+llm_df,agent_tool_df,country_df = getagentLLMToolmapping(agentData)
 unique_models = sorted(llm_df['child_name'].unique())
-agentLLMdf=llm_df.loc[
+agentLLMdf = llm_df.loc[
             (llm_df["parent_span_kind"]=="AGENT") & (llm_df["child_span_kind"]=="LLM"),
             ["parent_name","child_name","token","parent_id","error","token_input",
              "token_output","status_code","status_message","timestamp"]
@@ -163,13 +164,13 @@ agentLLMdf=llm_df.loc[
         "error": "error_count"
         })
 grouped_df = agentLLMdf.groupby(['agent_span_id', 'agent_name','llm_model',"status_code","status_message","timestamp"], as_index=False)[['token_count','error_count',"token_input","token_output"]].sum()
-grouped_df= calcCost(grouped_df)
-agent_new_df=grouped_df.loc[grouped_df["status_code"]=="OK",
+grouped_df = calcCost(grouped_df)
+agent_new_df = grouped_df.loc[grouped_df["status_code"]=="OK",
     ["agent_name","llm_model","token_count","agent_span_id","total_cost(in dollars)","error_count","timestamp"]]
-agent_new_error_df=grouped_df.loc[
+agent_new_error_df = grouped_df.loc[
     grouped_df["status_code"].isin(["UNSET", "ERROR"]),
     ["agent_name","llm_model","token_count","agent_span_id","status_message","total_cost(in dollars)","timestamp"]]
-toolLLMdf=llm_df.loc[
+toolLLMdf = llm_df.loc[
             (llm_df["parent_span_kind"]=="TOOL") & (llm_df["child_span_kind"]=="LLM"),
             ["parent_name","child_name","token","parent_id","error","token_input",
             "token_output","status_code","status_message","timestamp"]
@@ -181,15 +182,15 @@ toolLLMdf=llm_df.loc[
         "error": "error_count"
         })
 grouped_df = toolLLMdf.groupby(['tool_span_id','tool_name', 'llm_model',"status_code","status_message","timestamp"], as_index=False)[['token_count','error_count',"token_input","token_output"]].sum()
-grouped_df= calcCost(grouped_df)
-tool_new_df=grouped_df.loc[
+grouped_df = calcCost(grouped_df)
+tool_new_df =grouped_df.loc[
     grouped_df["status_code"]=="OK",
     ["tool_name","llm_model","token_count","tool_span_id","error_count","total_cost(in dollars)","timestamp"]]
-tool_new_error_df=grouped_df.loc[
+tool_new_error_df = grouped_df.loc[
     grouped_df["status_code"].isin(["UNSET", "ERROR"]),
     ["tool_name","llm_model","token_count","tool_span_id","error_count","total_cost(in dollars)","timestamp"]]       
-total_agent_new_df=agent_new_df.groupby(['agent_name', 'llm_model'], as_index=False)[["token_count","total_cost(in dollars)"]].sum()
-total_tool_new_df=tool_new_df.groupby(['tool_name', 'llm_model'], as_index=False)[["token_count","total_cost(in dollars)"]].sum()
+total_agent_new_df = agent_new_df.groupby(['agent_name', 'llm_model'], as_index=False)[["token_count","total_cost(in dollars)"]].sum()
+total_tool_new_df = tool_new_df.groupby(['tool_name', 'llm_model'], as_index=False)[["token_count","total_cost(in dollars)"]].sum()
 col1, col2,col4 = st.columns([1.3,1.3,4.7],border=True) 
 with col1:
     st.metric("Total LLM Calls", val1)
@@ -431,11 +432,11 @@ with chart_col2:
                 st.markdown("&nbsp;", unsafe_allow_html=True)  
 
 processed_df=process_trace_data(model_df, agent_tool_df)
-# exclude_cols = ["agent_data", "agent_tool_latency", "agent_tool_mapping"]
-# st.dataframe(processed_df.drop(columns=exclude_cols, errors="ignore"),
-#                  use_container_width=True,hide_index=True,height=300)
-st.dataframe(processed_df,
+exclude_cols = ["agent_data", "agent_tool_latency", "agent_tool_mapping"]
+st.dataframe(processed_df.drop(columns=exclude_cols, errors="ignore"),
                  use_container_width=True,hide_index=True,height=300)
+# st.dataframe(processed_df,
+#                  use_container_width=True,hide_index=True,height=300)
 
 # # --- Interactive Bar Chart for LLM calls ---
 # st.markdown("LLM Calls Breakdown by Trace ID")
@@ -681,14 +682,9 @@ with col1:
                         if output_summary is not None: 
                             st.markdown("**Output:**")
                             st.write(output_summary)
-                            # if isinstance(output_summary, (dict, list)):
-                            #     st.json(output_summary)
-                            # else:
-                            #     st.code(str(output_summary))
                         if agent_details.get("tools"):
                             tool_list = ", ".join(agent_details["tools"])
                             st.markdown(f"**Tools Used:** {tool_list}")
-
                         st.markdown("---")
                     else:
                         st.markdown("No `agent_data` available for this trace.")
@@ -754,6 +750,211 @@ with col2:
             st.info("No errors found in this dataset.")
     else:
         st.info("No status_code / status_message columns found.")
+
+    st.markdown("---")
+
+    st.markdown("Location Distribution (Country / Region / City)")
+
+    country_df = country_df if isinstance(country_df, pd.DataFrame) else pd.DataFrame(country_df)
+
+    if country_df.empty:
+        st.info("country_df is empty — no location data available.")
+    else:
+        # Detect column names
+        country_col = find_col(country_df, ["country_name", "countryCode"])
+        region_col = find_col(country_df, ["region", "region_name", "state", "state_name", "province"])
+        city_col = find_col(country_df, ["city", "city_name", "town", "locality", "place"])
+        has_latlon = ("latitude" in country_df.columns) and ("longitude" in country_df.columns)
+
+        st.caption(f"Detected columns — Country: `{country_col}`, Region/state: `{region_col}`, City: `{city_col}`")
+
+    # --- Side-by-side filters ---
+    col_country, col_region, col_city = st.columns([1,1,1])
+    with col_country:
+        country_options = ["All"] + safe_unique_sorted(country_df["country_name"])
+        selected_country = st.selectbox("Filter by Country", country_options, index=0, key="map_filter_country")
+    with col_region:
+        if selected_country and selected_country != "All":
+            region_source = country_df[country_df["country_name"].astype(str) == str(selected_country)]
+        else:
+            region_source = country_df
+        region_options = ["All"] + safe_unique_sorted(region_source["region"])
+        selected_region = st.selectbox("Filter by Region", region_options, index=0, key="map_filter_region")
+    with col_city:
+        city_source = country_df
+        if selected_country and selected_country != "All":
+            city_source = city_source[city_source["country_name"].astype(str) == str(selected_country)]
+        if selected_region and selected_region != "All":
+            city_source = city_source[city_source["region"].astype(str) == str(selected_region)]
+        city_options = ["All"] + safe_unique_sorted(city_source["city"])
+        selected_city = st.selectbox("Filter by City", city_options, index=0, key="map_filter_city")
+
+    # Apply filters
+    df_work = country_df.copy()
+    if selected_country and selected_country != "All":
+        df_work = df_work[df_work["country_name"].astype(str) == str(selected_country)]
+    if selected_region and selected_region != "All":
+        df_work = df_work[df_work["region"].astype(str) == str(selected_region)]
+    if selected_city and selected_city != "All":
+        df_work = df_work[df_work["city"].astype(str) == str(selected_city)]
+
+    st.markdown("---")
+    # --- Tabs for Country / Region / City charts ---
+    tab_country, tab_region, tab_city = st.tabs(["Country", "Region / State", "City"])
+    # Country tab chart
+    with tab_country:
+        if "country_name" not in df_work.columns:
+            st.info("Country column missing.")
+        else:
+            country_counts = agg_counts(df_work, "country_name")
+            if country_counts.empty:
+                st.info("No country data for selected filters.")
+            else:
+                fig_country = px.bar(
+                    country_counts, x="country_name", y="count", text="count",
+                    title="Country distribution", color="country_name",
+                    color_discrete_sequence=px.colors.qualitative.Plotly
+                )
+                fig_country.update_traces(textposition="outside", cliponaxis=False)
+                fig_country.update_layout(xaxis_tickangle=-30, xaxis={'categoryorder':'total descending'}, showlegend=False)
+                st.plotly_chart(fig_country, use_container_width=True)
+
+    # Region tab chart
+    with tab_region:
+        if "region" not in df_work.columns:
+            st.info("Region column missing.")
+        else:
+            region_counts = agg_counts(df_work, "region")
+            if region_counts.empty:
+                st.info("No region data for selected filters.")
+            else:
+                fig_region = px.bar(
+                    region_counts, x="region", y="count", text="count",
+                    title="Region / State distribution", color="region",
+                    color_discrete_sequence=px.colors.qualitative.Plotly
+                )
+                fig_region.update_traces(textposition="outside", cliponaxis=False)
+                fig_region.update_layout(xaxis_tickangle=-30, xaxis={'categoryorder':'total descending'}, showlegend=False)
+                st.plotly_chart(fig_region, use_container_width=True)
+
+    # City tab chart
+    with tab_city:
+        if "city" not in df_work.columns:
+            st.info("City column missing.")
+        else:
+            city_counts = agg_counts(df_work, "city")
+            if city_counts.empty:
+                st.info("No city data for selected filters.")
+            else:
+                fig_city = px.bar(
+                    city_counts, x="city", y="count", text="count",
+                    title="City distribution", color="city",
+                    color_discrete_sequence=px.colors.qualitative.Plotly
+                )
+                fig_city.update_traces(textposition="outside", cliponaxis=False)
+                fig_city.update_layout(xaxis_tickangle=-30, xaxis={'categoryorder':'total descending'}, showlegend=False)
+                st.plotly_chart(fig_city, use_container_width=True)
+
+    st.markdown("---")
+    st.markdown("Map visualization")
+    # --- Map visualization ---
+    if has_latlon and df_work[["latitude", "longitude"]].dropna().shape[0] > 0:
+        # scatter points on map using OpenStreetMap tiles (no token)
+        df_map = df_work.dropna(subset=["latitude", "longitude"]).copy()
+
+        # ensure numeric lat/lon
+        df_map["latitude"] = pd.to_numeric(df_map["latitude"], errors="coerce")
+        df_map["longitude"] = pd.to_numeric(df_map["longitude"], errors="coerce")
+        df_map = df_map.dropna(subset=["latitude", "longitude"]).reset_index(drop=True)
+
+        if df_map.empty:
+            st.info("No valid lat/lon points to plot on map.")
+        else:
+            # build hover text column (must exist as a column name)
+            df_map["hover_text"] = df_map.apply(
+                lambda r: f"{r.get('country_name','')}, {r.get('region','')}, {r.get('city','')} — trace:{r.get('trace_id')}",
+                axis=1
+            )
+
+            # compute center and zoom
+            center_lat = float(df_map["latitude"].mean())
+            center_lon = float(df_map["longitude"].mean())
+            unique_coords = df_map[["latitude", "longitude"]].drop_duplicates().shape[0]
+            zoom_level = 8 if unique_coords == 1 else 2  # zoom in if single point
+
+            # let user pick color dimension (only if column exists)
+            color_choice = "country_name" if "country_name" in df_map.columns else None
+
+            fig_map = px.scatter_map(
+                df_map,
+                lat="latitude",
+                lon="longitude",
+                hover_name="hover_text",   
+                color=color_choice,
+                zoom=zoom_level,
+                center={"lat": center_lat, "lon": center_lon},
+                height=600
+            )
+
+            # make markers visible
+            fig_map.update_traces(
+                marker=dict(color="blue", size=12, opacity=0.9, symbol="circle"),
+                selector=dict(mode="markers")
+            )
+
+            fig_map.update_layout(margin={"r":0,"t":30,"l":0,"b":0})
+            st.plotly_chart(fig_map, use_container_width=True)
+
+    else:
+        # fallback: choropleth across countries using country_name
+        if "country_name" not in df_work.columns or df_work["country_name"].dropna().empty:
+            st.info("No lat/lon and no country_name available for map rendering.")
+        else:
+            country_counts = agg_counts(df_work, "country_name")
+            # Plotly choropleth supports country names directly
+            fig_choro = px.choropleth(
+                country_counts,
+                locations="country_name",
+                locationmode="country names",
+                color="count",
+                hover_name="country_name",
+                title="Country-level distribution (choropleth)",
+                color_continuous_scale=px.colors.sequential.Plasma
+            )
+            fig_choro.update_layout(margin={"r":0,"t":40,"l":0,"b":0})
+            st.plotly_chart(fig_choro, use_container_width=True)
+
+    st.markdown("---")
+    st.markdown("## Summary tables")
+    # --- Summary tables (Country, Region, City) side by side ---
+    sc1, sc2, sc3 = st.columns([1,1,1])
+    with sc1:
+        st.subheader("Country summary")
+        if "country_name" in df_work.columns and not df_work["country_name"].dropna().empty:
+            country_summary = agg_counts(df_work, "country_name")
+            st.dataframe(country_summary.reset_index(drop=True))
+            csv_bytes = df_to_csv_bytes(country_summary)
+            st.download_button("Download country CSV", csv_bytes, file_name="country_summary.csv", mime="text/csv")
+        else:
+            st.info("No country data")
+
+    with sc2:
+        st.subheader("Region summary")
+        if "region" in df_work.columns and not df_work["region"].dropna().empty:
+            region_summary = agg_counts(df_work, "region")
+            st.dataframe(region_summary.reset_index(drop=True))
+            st.download_button("Download region CSV", df_to_csv_bytes(region_summary), file_name="region_summary.csv", mime="text/csv")
+        else:
+            st.info("No region data")
+
+    with sc3:
+        st.subheader("City summary")
+        if "city" in df_work.columns and not df_work["city"].dropna().empty:
+            city_summary = agg_counts(df_work, "city")
+            st.dataframe(city_summary.reset_index(drop=True))
+            st.download_button("Download city CSV", df_to_csv_bytes(city_summary), file_name="city_summary.csv", mime="text/csv")
+        else:
+            st.info("No city data")
 
 
 # === Mermaid Graph Section ===
