@@ -633,18 +633,8 @@ def process_trace_data(trace_data, agent_tool_df):
                     else:
                         trace_info["tool_usage_count"] = f"{agent_name}-{agent_tool_call_count}"
 
-                    latency = getAgentRunTime(agent_tools_for_agent["start_time"].min(), agent_tools_for_agent["start_time"].max())
-                    if trace_info["latency"]:
-                        trace_info["latency"] += ";\n " + f"{agent_name} - {latency}s"
-                    else:
-                        trace_info["latency"] = f"{agent_name} - {latency}s"
-
                     # tool_names_list = []
                     tool_latencies = []
-                    # print(agent_tools_for_agent)
-                    # for _, tool in agent_tools_for_agent.iterrows():
-                    #     tool_name = parseToolName(tool.get("attributes"))
-                    #     tool_names_list.append(tool_name)
                     for _, tool in agent_tools_for_agent.iterrows():
                         tool_name = parseToolName(tool.get("attributes"))
                         if trace_info["tool_names"]:
@@ -670,11 +660,6 @@ def process_trace_data(trace_data, agent_tool_df):
 
                         tool_latency = getAgentRunTime(tool.get("start_time"), tool.get("end_time"))
                         tool_latencies.append((tool_name, tool_latency))
-
-                        # if trace_info["tool_names"]:
-                        #     trace_info["tool_names"] += ", " + ", ".join(tool_names_list)
-                        # else:
-                        #     trace_info["tool_names"] = ", ".join(tool_names_list)
 
                         agent_tool_latency_str = format_detailed_tool_latency(tool_latencies)
                         if trace_info["agent_tool_latency"]:
@@ -711,14 +696,6 @@ def process_trace_data(trace_data, agent_tool_df):
         trace_info["agent_tool_mapping"] = "; ".join(
             [f"{agent} → [{', '.join(tools)}]" for agent, tools in tool_mapping.items()]
         )
-        # #create country distribution 
-        # country_counts = country_distribution(trace_df)
-        # # print(country_counts)
-        # if not country_counts.empty:
-        #     # trace_info["country"] = country_counts.iloc[0]["country_name"]
-        #     trace_info["country_distribution"] = json.dumps(
-        #         country_counts.to_dict(orient="records"), indent=2
-        #     )
 
         result.append(trace_info)
 
@@ -757,19 +734,19 @@ def extract_agent_data(agent_data_raw):
         else:
             input_norm = {}
 
-        tools_raw = (input_norm.get("tools") if isinstance(input_norm, dict) else None) \
-                    or agent_obj.get("tools") \
-                    or []
-        tools = []
-        if isinstance(tools_raw, list):
-            for t in tools_raw:
-                if isinstance(t, str):
-                    m = re.search(r"name='(.*?)'", t)
-                    tools.append(m.group(1) if m else t)
-                elif isinstance(t, dict):
-                    nm = t.get("name") or t.get("tool_name") or t.get("id")
-                    if nm:
-                        tools.append(nm)
+        # tools_raw = (input_norm.get("tools") if isinstance(input_norm, dict) else None) \
+        #             or agent_obj.get("tools") \
+        #             or []
+        # tools = []
+        # if isinstance(tools_raw, list):
+        #     for t in tools_raw:
+        #         if isinstance(t, str):
+        #             m = re.search(r"name='(.*?)'", t)
+        #             tools.append(m.group(1) if m else t)
+        #         elif isinstance(t, dict):
+        #             nm = t.get("name") or t.get("tool_name") or t.get("id")
+        #             if nm:
+        #                 tools.append(nm)
 
         input_goal = ""
         if isinstance(input_norm, dict):
