@@ -526,7 +526,7 @@ def process_trace_data(trace_data, agent_tool_df):
                 trace_info["agents"] = agent_name
             trace_info["No. of agent calls"] += 1
 
-            # get latency and append
+            # get Agent latency and append
             latency = getAgentRunTime(agent.get("start_time"), agent.get("end_time"))
             if trace_info["latency"]:
                 trace_info["latency"] += ";\n " + f"{agent_name} - {latency}s"
@@ -557,9 +557,6 @@ def process_trace_data(trace_data, agent_tool_df):
             # Normalize input JSON and parse agent input & output details according to known formats
             parsed_agent_input = None
             parsed_agent_output = None
-
-            # First format: top-level "input" key with JSON string in "value"
-            # Second format: inside that JSON string, another JSON string containing keys like "input", "messages" etc.
 
             # Try parsing input
             if agent_input_str:
@@ -633,7 +630,6 @@ def process_trace_data(trace_data, agent_tool_df):
                     else:
                         trace_info["tool_usage_count"] = f"{agent_name}-{agent_tool_call_count}"
 
-                    # tool_names_list = []
                     tool_latencies = []
                     for _, tool in agent_tools_for_agent.iterrows():
                         tool_name = parseToolName(tool.get("attributes"))
@@ -666,21 +662,6 @@ def process_trace_data(trace_data, agent_tool_df):
                             trace_info["agent_tool_latency"] += f"\n\n{agent_name}:\n{agent_tool_latency_str}"
                         else:
                             trace_info["agent_tool_latency"] = f"{agent_name}:\n{agent_tool_latency_str}"
-
-        # # Overall tool latency summary for all tools in the trace
-        # overall_tools = []
-        # overall_tool_latencies = []
-        # all_tool_spans = trace_df[trace_df["span_kind"] == "TOOL"]
-        # for _, tool in all_tool_spans.iterrows():
-        #     tool_name = parseToolName(tool.get("attributes"))
-        #     if tool_name:
-        #         overall_tools.append(tool_name)
-        #         tool_latency = getAgentRunTime(tool.get("start_time"), tool.get("end_time"))
-        #         overall_tool_latencies.append((tool_name, tool_latency))
-
-        # if overall_tool_latencies:
-        #     trace_info["tool_latency"] = format_latency_summary(overall_tool_latencies)
-        #     trace_info["tool_names"] = ", ".join(overall_tools)
 
         trace_info["total_llm_calls"] = int(total_llm_calls)
         trace_info["total_token_usage"] = int(total_token_usage_sum)
@@ -765,8 +746,6 @@ def extract_agent_data(agent_data_raw):
 
         # -------- OUTPUT --------
         output_raw = agent_obj.get("output", None)
-        # print("****************************************************")
-        # print(output_raw)
         if isinstance(output_raw, dict):
             output_summary = output_raw.get("raw", {}) 
         else:
@@ -774,7 +753,7 @@ def extract_agent_data(agent_data_raw):
             output_raw
 
         agent_data_map[name] = {
-            "tools": tools,
+            # "tools": tools,
             "input_summary": input_goal,
             "output_summary": output_summary,
         }
