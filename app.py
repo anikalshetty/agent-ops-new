@@ -925,11 +925,11 @@ with col2:
             st.plotly_chart(fig_choro, use_container_width=True)
 
     st.markdown("---")
-    st.markdown("## Summary tables")
+    st.markdown("### Summary tables")
     # --- Summary tables (Country, Region, City) side by side ---
     sc1, sc2, sc3 = st.columns([1,1,1])
     with sc1:
-        st.subheader("Country summary")
+        st.markdown("**Country summary**")
         if "country_name" in df_work.columns and not df_work["country_name"].dropna().empty:
             country_summary = agg_counts(df_work, "country_name")
             st.dataframe(country_summary.reset_index(drop=True))
@@ -939,7 +939,7 @@ with col2:
             st.info("No country data")
 
     with sc2:
-        st.subheader("Region summary")
+        st.markdown("**Region summary**")
         if "region" in df_work.columns and not df_work["region"].dropna().empty:
             region_summary = agg_counts(df_work, "region")
             st.dataframe(region_summary.reset_index(drop=True))
@@ -948,7 +948,7 @@ with col2:
             st.info("No region data")
 
     with sc3:
-        st.subheader("City summary")
+        st.markdown("**City summary**")
         if "city" in df_work.columns and not df_work["city"].dropna().empty:
             city_summary = agg_counts(df_work, "city")
             st.dataframe(city_summary.reset_index(drop=True))
